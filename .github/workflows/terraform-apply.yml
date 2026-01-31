@@ -31,7 +31,13 @@ jobs:
         id: changes
         run: |
           # Get list of changed files in this commit
-          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          # Handle first commit (no parent)
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          else
+            # First commit - list all files
+            CHANGED_FILES=$(git ls-tree -r --name-only HEAD)
+          fi
 
           # Find affected environments
           ENVIRONMENTS=()
