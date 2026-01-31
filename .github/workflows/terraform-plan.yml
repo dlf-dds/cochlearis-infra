@@ -1,0 +1,130 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'environments/**'
+      - 'modules/**'
+      - '.github/workflows/terraform-plan.yml'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: eu-central-1
+  TF_VERSION: 1.7.0
+
+jobs:
+  detect-changes:
+    name: Detect Changed Environments
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.changes.outputs.environments }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed environments
+        id: changes
+        run: |
+          # Get list of changed files
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+
+          # Find affected environments
+          ENVIRONMENTS=()
+
+          for env_dir in environments/aws/*/; do
+            env_name=$(basename "$env_dir")
+            # Check if any files in this env changed, or if modules changed
+            if echo "$CHANGED_FILES" | grep -q "environments/aws/$env_name/" || \
+               echo "$CHANGED_FILES" | grep -q "modules/"; then
+              ENVIRONMENTS+=("$env_name")
+            fi
+          done
+
+          # Output as JSON array
+          if [ ${#ENVIRONMENTS[@]} -eq 0 ]; then
+            echo "environments=[]" >> $GITHUB_OUTPUT
+          else
+            JSON=$(printf '%s\n' "${ENVIRONMENTS[@]}" | jq -R . | jq -s -c .)
+            echo "environments=$JSON" >> $GITHUB_OUTPUT
+          fi
+
+  plan:
+    name: Plan - ${{ matrix.environment }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.detect-changes.outputs.environments) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        id: init
+        working-directory: environments/aws/${{ matrix.environment }}
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: environments/aws/${{ matrix.environment }}
+        run: |
+          terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+          echo "plan<<EOF" >> $GITHUB_OUTPUT
+          cat plan_output.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Post Plan to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const plan = `${{ steps.plan.outputs.plan }}`;
+            const truncatedPlan = plan.length > 60000
+              ? plan.substring(0, 60000) + '\n\n... (truncated)'
+              : plan;
+
+            const output = `### Terraform Plan - \`${{ matrix.environment }}\`
+
+            <details>
+            <summary>Show Plan</summary>
+
+            \`\`\`hcl
+            ${truncatedPlan}
+            \`\`\`
+
+            </details>
+
+            **Result:** ${{ steps.plan.outcome == 'success' && '✅ Success' || '❌ Failed' }}
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Format all Terraform files in the repository
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
+
+echo "Formatting Terraform files..."
+
+terraform fmt -recursive "${REPO_ROOT}"
+
+echo "Done!"

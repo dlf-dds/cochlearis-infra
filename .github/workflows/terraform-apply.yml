@@ -1,0 +1,146 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'environments/**'
+      - 'modules/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  TF_VERSION: 1.7.0
+
+jobs:
+  detect-changes:
+    name: Detect Changed Environments
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.changes.outputs.environments }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed environments
+        id: changes
+        run: |
+          # Get list of changed files in this commit
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+
+          # Find affected environments
+          ENVIRONMENTS=()
+
+          for env_dir in environments/aws/*/; do
+            env_name=$(basename "$env_dir")
+            # Check if any files in this env changed, or if modules changed
+            if echo "$CHANGED_FILES" | grep -q "environments/aws/$env_name/" || \
+               echo "$CHANGED_FILES" | grep -q "modules/"; then
+              ENVIRONMENTS+=("$env_name")
+            fi
+          done
+
+          # Output as JSON array
+          if [ ${#ENVIRONMENTS[@]} -eq 0 ]; then
+            echo "environments=[]" >> $GITHUB_OUTPUT
+          else
+            JSON=$(printf '%s\n' "${ENVIRONMENTS[@]}" | jq -R . | jq -s -c .)
+            echo "environments=$JSON" >> $GITHUB_OUTPUT
+          fi
+
+  apply-dev:
+    name: Apply - dev
+    needs: detect-changes
+    if: contains(fromJson(needs.detect-changes.outputs.environments), 'dev')
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: environments/aws/dev
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: environments/aws/dev
+        run: terraform apply -auto-approve
+
+  apply-staging:
+    name: Apply - staging
+    needs: [detect-changes, apply-dev]
+    if: contains(fromJson(needs.detect-changes.outputs.environments), 'staging')
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: environments/aws/staging
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: environments/aws/staging
+        run: terraform apply -auto-approve
+
+  apply-prod:
+    name: Apply - prod
+    needs: [detect-changes, apply-staging]
+    if: contains(fromJson(needs.detect-changes.outputs.environments), 'prod')
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      # Requires manual approval configured in GitHub Environment settings
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: environments/aws/prod
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: environments/aws/prod
+        run: terraform apply -auto-approve

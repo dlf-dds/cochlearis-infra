@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Generate documentation for all Terraform modules
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
+
+echo "Generating Terraform documentation..."
+
+# Find all module directories and generate docs
+find "${REPO_ROOT}/modules" -name "main.tf" -type f | while read -r main_tf; do
+    module_dir=$(dirname "${main_tf}")
+    echo "  Updating: ${module_dir}"
+
+    terraform-docs markdown table \
+        --output-file README.md \
+        --output-mode inject \
+        "${module_dir}" || terraform-docs markdown table \
+        --output-file README.md \
+        "${module_dir}"
+done
+
+echo "Done!"
