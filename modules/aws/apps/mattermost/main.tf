@@ -148,11 +148,12 @@ module "service" {
       MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS   = "false"
       MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION = "false"
     },
-    # OpenID Connect SSO via Zitadel (Team Edition uses GitLab-style OAuth which works with OIDC providers)
+    # OpenID Connect SSO via Zitadel (Team Edition uses GitLab-style OAuth adapter)
+    # Note: Team Edition requires "read_user" scope, NOT standard OIDC scopes
     local.oidc_enabled ? {
       MM_GITLABSETTINGS_ENABLE          = "true"
       MM_GITLABSETTINGS_ID              = var.oidc_client_id
-      MM_GITLABSETTINGS_SCOPE           = "openid profile email"
+      MM_GITLABSETTINGS_SCOPE           = "read_user"
       MM_GITLABSETTINGS_AUTHENDPOINT    = "${local.oidc_issuer}/oauth/v2/authorize"
       MM_GITLABSETTINGS_TOKENENDPOINT   = "${local.oidc_issuer}/oauth/v2/token"
       MM_GITLABSETTINGS_USERAPIENDPOINT = "${local.oidc_issuer}/oidc/v1/userinfo"

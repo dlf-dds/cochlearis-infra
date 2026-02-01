@@ -165,3 +165,55 @@ resource "aws_secretsmanager_secret_version" "mattermost_oidc" {
     client_secret = zitadel_application_oidc.mattermost.client_secret
   })
 }
+
+# =============================================================================
+# Outline OIDC Application (optional - only created if outline_domain is set)
+# =============================================================================
+
+resource "zitadel_application_oidc" "outline" {
+  count = var.outline_domain != "" ? 1 : 0
+
+  project_id = zitadel_project.main.id
+  org_id     = var.organization_id
+
+  name = "Outline"
+
+  redirect_uris             = ["https://${var.outline_domain}/auth/oidc.callback"]
+  post_logout_redirect_uris = ["https://${var.outline_domain}/"]
+
+  response_types              = ["OIDC_RESPONSE_TYPE_CODE"]
+  grant_types                 = ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"]
+  app_type                    = "OIDC_APP_TYPE_WEB"
+  auth_method_type            = "OIDC_AUTH_METHOD_TYPE_BASIC"
+  access_token_type           = "OIDC_TOKEN_TYPE_BEARER"
+  access_token_role_assertion = true
+  id_token_role_assertion     = true
+  id_token_userinfo_assertion = true
+  dev_mode                    = false
+
+  clock_skew                   = "0s"
+  additional_origins           = []
+  skip_native_app_success_page = false
+}
+
+# Store Outline OIDC credentials in Secrets Manager
+resource "aws_secretsmanager_secret" "outline_oidc" {
+  count = var.outline_domain != "" ? 1 : 0
+
+  name        = "${var.secret_prefix}-outline-oidc-${random_id.secret_suffix.hex}"
+  description = "Outline OIDC client credentials from Zitadel"
+
+  tags = {
+    Name = "${var.secret_prefix}-outline-oidc"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "outline_oidc" {
+  count = var.outline_domain != "" ? 1 : 0
+
+  secret_id = aws_secretsmanager_secret.outline_oidc[0].id
+  secret_string = jsonencode({
+    client_id     = zitadel_application_oidc.outline[0].client_id
+    client_secret = zitadel_application_oidc.outline[0].client_secret
+  })
+}

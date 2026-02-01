@@ -1,4 +1,4 @@
-# Zitadel App Module Variables
+# Outline App Module Variables
 
 variable "project" {
   description = "Project name for resource naming"
@@ -7,6 +7,11 @@ variable "project" {
 
 variable "environment" {
   description = "Environment name (dev, staging, prod)"
+  type        = string
+}
+
+variable "region" {
+  description = "AWS region"
   type        = string
 }
 
@@ -78,6 +83,11 @@ variable "task_role_arn" {
   type        = string
 }
 
+variable "task_role_name" {
+  description = "Name of the ECS task role"
+  type        = string
+}
+
 # Database configuration
 variable "db_instance_class" {
   description = "RDS instance class"
@@ -109,6 +119,13 @@ variable "db_skip_final_snapshot" {
   default     = true
 }
 
+# Redis configuration
+variable "redis_node_type" {
+  description = "ElastiCache node type"
+  type        = string
+  default     = "cache.t3.micro"
+}
+
 # ECS configuration
 variable "ecs_cpu" {
   description = "CPU units for the ECS task"
@@ -131,53 +148,30 @@ variable "desired_count" {
 variable "listener_rule_priority" {
   description = "Priority for the ALB listener rule"
   type        = number
-  default     = 100
+  default     = 600
 }
 
 variable "container_image" {
-  description = "Docker image for Zitadel"
+  description = "Docker image for Outline"
   type        = string
-  default     = "ghcr.io/zitadel/zitadel:latest"
+  default     = "outlinewiki/outline:latest"
 }
 
-variable "admin_username" {
-  description = "Initial admin username"
+# OIDC configuration (for SSO via Zitadel)
+variable "oidc_issuer" {
+  description = "OIDC issuer URL (e.g., https://auth.dev.example.com)"
   type        = string
-  default     = "admin"
+  default     = ""
 }
 
-variable "certificate_arn" {
-  description = "ARN of an existing ACM certificate. Required when create_certificate is false."
+variable "oidc_client_id" {
+  description = "OIDC client ID"
   type        = string
-  default     = null
+  default     = ""
 }
 
-variable "create_certificate" {
-  description = "Whether to create a new ACM certificate. Set to false when providing certificate_arn."
-  type        = bool
-  default     = true
-}
-
-variable "region" {
-  description = "AWS region"
+variable "oidc_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing OIDC client credentials (JSON with 'client_secret' key)"
   type        = string
-}
-
-variable "smtp_from_email" {
-  description = "Email address to send from (must be verified in SES)"
-  type        = string
-  default     = null
-}
-
-variable "smtp_from_name" {
-  description = "Display name for sent emails"
-  type        = string
-  default     = "Zitadel"
-}
-
-# Additional Load Balancer Support (for internal ALB)
-variable "additional_target_group_arns" {
-  description = "Additional target group ARNs to register the service with (e.g., internal ALB)"
-  type        = list(string)
-  default     = []
+  default     = ""
 }

@@ -37,3 +37,14 @@ output "mattermost_oidc_secret_arn" {
   description = "ARN of the Mattermost OIDC credentials secret"
   value       = aws_secretsmanager_secret.mattermost_oidc.arn
 }
+
+# Outline (optional)
+output "outline_client_id" {
+  description = "Outline OIDC client ID (empty if outline_domain not set)"
+  value       = length(zitadel_application_oidc.outline) > 0 ? zitadel_application_oidc.outline[0].client_id : ""
+}
+
+output "outline_oidc_secret_arn" {
+  description = "ARN of the Outline OIDC credentials secret (empty if outline_domain not set)"
+  value       = length(aws_secretsmanager_secret.outline_oidc) > 0 ? aws_secretsmanager_secret.outline_oidc[0].arn : ""
+}

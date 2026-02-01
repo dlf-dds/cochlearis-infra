@@ -1,10 +1,10 @@
-# BookStack Documentation Platform Module
+# Outline Wiki Module
 #
-# Self-hosted BookStack wiki with SSO support
+# Self-hosted Outline wiki with SSO support
 
 locals {
   name_prefix  = "${var.project}-${var.environment}"
-  domain       = "docs.${var.environment}.${var.domain_name}"
+  domain       = "wiki.${var.environment}.${var.domain_name}"
   oidc_enabled = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
 }
 
@@ -37,17 +37,17 @@ resource "aws_route53_record" "main" {
   }
 }
 
-# MySQL database (BookStack only supports MySQL/MariaDB)
+# PostgreSQL database
 module "database" {
-  source = "../../rds-mysql"
+  source = "../../rds-postgres"
 
   project            = var.project
   environment        = var.environment
   vpc_id             = var.vpc_id
   private_subnet_ids = var.private_subnet_ids
 
-  identifier    = "bookstack"
-  database_name = "bookstack"
+  identifier    = "outline"
+  database_name = "outline"
 
   allowed_security_group_ids = [var.ecs_tasks_security_group_id]
 
@@ -58,9 +58,30 @@ module "database" {
   skip_final_snapshot = var.db_skip_final_snapshot
 }
 
-# Application key secret
-resource "random_password" "app_key" {
-  length  = 32
+# Redis for caching/sessions
+module "redis" {
+  source = "../../elasticache-redis"
+
+  project     = var.project
+  environment = var.environment
+  vpc_id      = var.vpc_id
+
+  identifier         = "outline"
+  private_subnet_ids = var.private_subnet_ids
+
+  allowed_security_group_ids = [var.ecs_tasks_security_group_id]
+
+  node_type = var.redis_node_type
+}
+
+# Secret key for sessions
+resource "random_password" "secret_key" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "utils_secret" {
+  length  = 64
   special = false
 }
 
@@ -69,26 +90,31 @@ resource "random_id" "secret_suffix" {
   byte_length = 4
 }
 
-resource "aws_secretsmanager_secret" "app_key" {
-  name        = "${local.name_prefix}-bookstack-app-key-${random_id.secret_suffix.hex}"
-  description = "BookStack Laravel application key"
+resource "aws_secretsmanager_secret" "app_secrets" {
+  name        = "${local.name_prefix}-outline-secrets-${random_id.secret_suffix.hex}"
+  description = "Outline application secrets"
 
   tags = {
-    Name = "${local.name_prefix}-bookstack-app-key"
+    Name = "${local.name_prefix}-outline-secrets"
   }
 }
 
-resource "aws_secretsmanager_secret_version" "app_key" {
-  secret_id     = aws_secretsmanager_secret.app_key.id
-  secret_string = "base64:${base64encode(random_password.app_key.result)}"
+resource "aws_secretsmanager_secret_version" "app_secrets" {
+  secret_id = aws_secretsmanager_secret.app_secrets.id
+  secret_string = jsonencode({
+    secret_key   = random_password.secret_key.result
+    utils_secret = random_password.utils_secret.result
+    # Full DATABASE_URL (Outline requires complete connection string)
+    database_url = "postgres://${module.database.master_username}:${urlencode(module.database.master_password)}@${module.database.address}:${module.database.port}/${module.database.database_name}?sslmode=require"
+  })
 }
 
 # S3 bucket for uploads
 resource "aws_s3_bucket" "uploads" {
-  bucket = "${local.name_prefix}-bookstack-uploads"
+  bucket = "${local.name_prefix}-outline-uploads"
 
   tags = {
-    Name = "${local.name_prefix}-bookstack-uploads"
+    Name = "${local.name_prefix}-outline-uploads"
   }
 }
 
@@ -111,9 +137,20 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   }
 }
 
+resource "aws_s3_bucket_cors_configuration" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "PUT", "POST", "DELETE"]
+    allowed_origins = ["https://${local.domain}"]
+    max_age_seconds = 3000
+  }
+}
+
 # IAM policy for S3 access
 resource "aws_iam_role_policy" "s3_access" {
-  name = "${local.name_prefix}-bookstack-s3-access"
+  name = "${local.name_prefix}-outline-s3-access"
   role = var.task_role_name
 
   policy = jsonencode({
@@ -125,7 +162,9 @@ resource "aws_iam_role_policy" "s3_access" {
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject",
-          "s3:ListBucket"
+          "s3:ListBucket",
+          "s3:GetObjectAcl",
+          "s3:PutObjectAcl"
         ]
         Resource = [
           aws_s3_bucket.uploads.arn,
@@ -136,12 +175,9 @@ resource "aws_iam_role_policy" "s3_access" {
   })
 }
 
-# Note: ALB -> ECS security group rules are managed centrally in the ECS cluster module
-# to avoid duplicate rule conflicts when multiple apps use the same ports.
-
 # IAM policy for secrets access
 resource "aws_iam_role_policy" "secrets_access" {
-  name = "${local.name_prefix}-bookstack-secrets-access"
+  name = "${local.name_prefix}-outline-secrets-access"
   role = var.task_execution_role_name
 
   policy = jsonencode({
@@ -153,10 +189,7 @@ resource "aws_iam_role_policy" "secrets_access" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = concat(
-          [
-            aws_secretsmanager_secret.app_key.arn,
-            module.database.master_password_secret_arn
-          ],
+          [aws_secretsmanager_secret.app_secrets.arn],
           local.oidc_enabled ? [var.oidc_client_secret_arn] : []
         )
       }
@@ -171,7 +204,7 @@ module "service" {
   project     = var.project
   environment = var.environment
 
-  service_name = "bookstack"
+  service_name = "outline"
   cluster_id   = var.ecs_cluster_id
   vpc_id       = var.vpc_id
 
@@ -182,7 +215,7 @@ module "service" {
   task_role_arn           = var.task_role_arn
 
   container_image = var.container_image
-  container_port  = 80
+  container_port  = 3000
 
   cpu           = var.ecs_cpu
   memory        = var.ecs_memory
@@ -191,57 +224,42 @@ module "service" {
   environment_variables = merge(
     {
       # App settings
-      APP_URL = "https://${local.domain}"
-      APP_ENV = "production"
+      URL              = "https://${local.domain}"
+      PORT             = "3000"
+      FORCE_HTTPS      = "false" # ALB handles TLS
+      ENABLE_UPDATES   = "false"
+      WEB_CONCURRENCY  = "1"
+      LOG_LEVEL        = "info"
+      DEFAULT_LANGUAGE = "en_US"
 
-      # Trust all proxies (required for ALB SSL termination)
-      # Without this, Laravel generates HTTP callback URLs instead of HTTPS
-      APP_PROXIES = "*"
+      # Redis
+      REDIS_URL = "redis://${module.redis.endpoint}:${module.redis.port}"
 
-      # Database (MySQL)
-      DB_CONNECTION = "mysql"
-      DB_HOST       = module.database.address
-      DB_PORT       = tostring(module.database.port)
-      DB_DATABASE   = module.database.database_name
-      DB_USERNAME   = module.database.master_username
-
-      # Session and cache
-      SESSION_DRIVER        = "database"
-      CACHE_DRIVER          = "database"
-      SESSION_SECURE_COOKIE = "true"
-
-      # File storage
-      STORAGE_TYPE = "local"
-
-      # Mail settings (SES)
-      MAIL_DRIVER     = "smtp"
-      MAIL_HOST       = "email-smtp.${var.region}.amazonaws.com"
-      MAIL_PORT       = "587"
-      MAIL_FROM       = "docs@${var.domain_name}"
-      MAIL_FROM_NAME  = "BookStack"
-      MAIL_ENCRYPTION = "tls"
+      # S3 Storage
+      FILE_STORAGE              = "s3"
+      AWS_S3_UPLOAD_BUCKET_NAME = aws_s3_bucket.uploads.id
+      AWS_S3_UPLOAD_BUCKET_URL  = "https://${aws_s3_bucket.uploads.bucket_regional_domain_name}"
+      AWS_S3_FORCE_PATH_STYLE   = "false"
+      AWS_S3_ACL                = "private"
+      AWS_REGION                = var.region
     },
     # OIDC SSO via Zitadel (only if configured)
     local.oidc_enabled ? {
-      AUTH_METHOD              = "oidc"
-      OIDC_NAME                = "Zitadel"
-      OIDC_DISPLAY_NAME_CLAIMS = "name"
-      OIDC_CLIENT_ID           = var.oidc_client_id
-      OIDC_ISSUER              = var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"
-      OIDC_ISSUER_DISCOVER     = "true"
-      OIDC_USER_TO_GROUPS      = "true"
-      OIDC_GROUPS_CLAIM        = "groups"
-      OIDC_REMOVE_FROM_GROUPS  = "true"
-    } : {
-      # Standard auth when OIDC not configured
-      AUTH_METHOD = "standard"
-    }
+      OIDC_CLIENT_ID    = var.oidc_client_id
+      OIDC_AUTH_URI     = "${var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"}/oauth/v2/authorize"
+      OIDC_TOKEN_URI    = "${var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"}/oauth/v2/token"
+      OIDC_USERINFO_URI = "${var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"}/oidc/v1/userinfo"
+      OIDC_LOGOUT_URI   = "${var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"}/oidc/v1/end_session"
+      OIDC_DISPLAY_NAME = "Zitadel"
+      OIDC_SCOPES       = "openid profile email"
+    } : {}
   )
 
   secrets = merge(
     {
-      DB_PASSWORD = "${module.database.master_password_secret_arn}:password::"
-      APP_KEY     = aws_secretsmanager_secret.app_key.arn
+      SECRET_KEY   = "${aws_secretsmanager_secret.app_secrets.arn}:secret_key::"
+      UTILS_SECRET = "${aws_secretsmanager_secret.app_secrets.arn}:utils_secret::"
+      DATABASE_URL = "${aws_secretsmanager_secret.app_secrets.arn}:database_url::"
     },
     local.oidc_enabled ? {
       OIDC_CLIENT_SECRET = "${var.oidc_client_secret_arn}:client_secret::"
@@ -253,6 +271,6 @@ module "service" {
   alb_listener_arn        = var.alb_listener_arn
   host_header             = local.domain
   listener_rule_priority  = var.listener_rule_priority
-  health_check_path       = "/status"
+  health_check_path       = "/_health"
   health_check_matcher    = "200"
 }

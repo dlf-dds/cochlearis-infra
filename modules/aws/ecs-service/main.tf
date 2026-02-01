@@ -248,10 +248,21 @@ resource "aws_ecs_service" "main" {
     assign_public_ip = false
   }
 
+  # Primary target group (created by this module)
   dynamic "load_balancer" {
     for_each = var.create_alb_target_group ? [1] : []
     content {
       target_group_arn = aws_lb_target_group.main[0].arn
+      container_name   = var.service_name
+      container_port   = var.container_port
+    }
+  }
+
+  # Additional target groups (e.g., internal ALB)
+  dynamic "load_balancer" {
+    for_each = var.additional_target_group_arns
+    content {
+      target_group_arn = load_balancer.value
       container_name   = var.service_name
       container_port   = var.container_port
     }

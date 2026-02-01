@@ -194,3 +194,10 @@ variable "sidecar_containers" {
   }))
   default = []
 }
+
+# Additional Load Balancer Support (for multi-ALB setups like internal ALB)
+variable "additional_target_group_arns" {
+  description = "Additional target group ARNs to register the service with (e.g., internal ALB)"
+  type        = list(string)
+  default     = []
+}

@@ -273,6 +273,32 @@ SETTING_REMOTE_POSTGRES_SSLMODE  = "require"
 
 ## ECS / Fargate
 
+### Docker Hub Rate Limits Cause Task Failures
+**Problem**: ECS tasks fail to start with error: `CannotPullContainerError: pull image manifest has been retried 7 time(s): 429 Too Many Requests - Server message: toomanyrequests: You have reached your unauthenticated pull rate limit`
+
+**Cause**: Docker Hub limits unauthenticated pulls to 100 per 6 hours per IP. ECS Fargate tasks pulling from Docker Hub share NAT gateway IPs, quickly exhausting the limit during deployments or restarts.
+
+**Solutions** (in order of preference):
+1. **Use ECR (recommended)**: Mirror images to your own ECR repositories
+   ```bash
+   # One-time setup
+   aws ecr create-repository --repository-name zulip/docker-zulip
+   docker pull zulip/docker-zulip:latest
+   docker tag zulip/docker-zulip:latest $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/zulip/docker-zulip:latest
+   docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/zulip/docker-zulip:latest
+   ```
+
+2. **Authenticate to Docker Hub**: Create a Docker Hub account and store credentials in Secrets Manager, then configure ECS to use them via `repositoryCredentials`
+
+3. **Use alternative registries**: GHCR (GitHub Container Registry) and Quay.io have higher rate limits
+
+**Affected images in this project**:
+- `zulip/docker-zulip` - Docker Hub
+- `zulip/zulip-postgresql` - Docker Hub
+- `linuxserver/bookstack` - Docker Hub
+- `mattermost/mattermost-team-edition` - Docker Hub
+- `ghcr.io/zitadel/zitadel` - GHCR (not affected)
+
 ### Duplicate Security Group Rules Cause Terraform Conflicts
 **Problem**: Terraform fails with "A]aws_security_group_rule... already exists" when multiple app modules create the same ingress rules.
 
@@ -426,6 +452,122 @@ The OIDC endpoint works from the public internet (curl returns 200), but fails f
 
 **Note**: This issue affects any scenario where ECS services need to call each other through a public load balancer. For ECS-to-ECS communication, always prefer internal networking.
 
+### Internal ALB Implementation Details
+**Context**: When implementing an internal ALB for service-to-service communication (to solve hairpin NAT), there are several AWS/Terraform constraints to be aware of.
+
+**Target Groups Cannot Be Shared Across ALBs**:
+AWS doesn't allow a single target group to be associated with multiple load balancers. Error: `TargetGroupAssociationLimit: The following target groups cannot be associated with more than one load balancer`.
+
+**Solution**: Create separate target groups for each ALB:
+```hcl
+# Original target group (created by ecs-service module for public ALB)
+# cochlearis-dev-zitadel
+
+# Separate target group for internal ALB
+resource "aws_lb_target_group" "zitadel_internal" {
+  name             = "${var.project}-${var.environment}-zitadel-int"
+  port             = 8080
+  protocol         = "HTTP"
+  protocol_version = "HTTP2"  # Match the original
+  vpc_id           = module.vpc.vpc_id
+  target_type      = "ip"
+  # ... health check config matching original
+}
+```
+
+**ECS Services Must Register with Both Target Groups**:
+ECS services can register with multiple target groups via multiple `load_balancer` blocks. The ecs-service module needs an `additional_target_group_arns` variable:
+```hcl
+# In ecs-service module
+dynamic "load_balancer" {
+  for_each = var.additional_target_group_arns
+  content {
+    target_group_arn = load_balancer.value
+    container_name   = var.service_name
+    container_port   = var.container_port
+  }
+}
+```
+
+**Security Group Rules Need Both ALBs**:
+Don't forget to add ingress rules from the internal ALB to ECS tasks. Without these, health checks will fail:
+```hcl
+# Internal ALB needs to reach ECS tasks on the service port
+variable "internal_alb_security_group_id" { ... }
+variable "internal_alb_ingress_ports" { ... }
+
+resource "aws_security_group_rule" "internal_alb_to_ecs" {
+  for_each = toset([for p in var.internal_alb_ingress_ports : tostring(p)])
+  type                     = "ingress"
+  from_port                = tonumber(each.value)
+  to_port                  = tonumber(each.value)
+  protocol                 = "tcp"
+  source_security_group_id = var.internal_alb_security_group_id
+  security_group_id        = aws_security_group.ecs_tasks.id
+}
+```
+
+### ECS Tasks Cache DNS Resolution at Startup
+**Problem**: After fixing DNS records (e.g., pointing a private zone record to an internal ALB), running ECS tasks still fail because they cached the old DNS resolution.
+
+**Cause**: ECS Fargate tasks resolve DNS at container startup and may cache results. Containers started before a DNS change will continue using the old resolution until restarted.
+
+**Symptoms**:
+- Test tasks (newly launched) work correctly
+- Running service tasks fail with the same request
+- Logs show connection failures to IP addresses that are no longer valid
+
+**Solution**: Force a new deployment after DNS changes:
+```bash
+aws ecs update-service --cluster CLUSTER --service SERVICE --force-new-deployment
+```
+
+**Verification**: Before assuming a fix works, always test from a freshly-launched task:
+```bash
+# Run a one-off task to test connectivity
+aws ecs run-task \
+  --cluster CLUSTER \
+  --task-definition TASK_DEF \
+  --overrides '{"containerOverrides":[{"name":"CONTAINER","command":["sh","-c","nslookup HOSTNAME && curl ENDPOINT"]}]}' \
+  --network-configuration "awsvpcConfiguration={...}"
+```
+
+**Note**: ECS Exec (`aws ecs execute-command`) may not work with all container images (requires SSM agent). The run-task approach with command override is more reliable for debugging.
+
+### Terraform Targeted Apply Can Leave State Incomplete
+**Problem**: Using `terraform apply -target=...` to apply specific resources can leave other resources missing from state or partially configured.
+
+**Common Issues**:
+1. Security group rules not created when targeting only the service
+2. Target group registrations missing when service isn't redeployed
+3. Dependent resources left in pending state
+4. **DNS records not updated** - critical for internal ALB routing fixes
+
+**Solution**: After targeted applies, always run a full `terraform plan` to verify state completeness. Consider using AWS CLI for emergency fixes while waiting for full terraform runs:
+```bash
+# Emergency security group rule addition
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-ecs-tasks \
+  --protocol tcp --port 8080 \
+  --source-group sg-alb
+```
+
+### Terraform State Locks Can Become Stale
+**Problem**: If a terraform command is interrupted (Ctrl+C, timeout, crash), the state lock may remain in DynamoDB, blocking subsequent commands.
+
+**Error**: `Error: Error acquiring the state lock`
+
+**Solution**:
+```bash
+# Note the Lock ID from the error message, then:
+terraform force-unlock -force <lock-id>
+
+# Example:
+terraform force-unlock -force 6ab2905a-4009-6ad1-536e-f3a3ebb19609
+```
+
+**Caution**: Only force-unlock if you're certain no other terraform operation is running. Check AWS CloudWatch or console for active terraform processes first.
+
 ### Database Password Special Characters Break Connection URLs
 **Problem**: Mattermost crashes with "net/url: invalid userinfo" when connecting to RDS PostgreSQL.
 
@@ -486,3 +628,70 @@ terraform apply
 - `modules/aws/apps/zitadel/main.tf`
 - `modules/aws/apps/zulip/main.tf`
 - `modules/aws/zitadel-oidc/main.tf`
+
+## Application-Specific OIDC Issues
+
+### BookStack (Laravel) Behind ALB Needs APP_PROXIES for HTTPS
+**Problem**: BookStack OIDC login silently fails. The `/oidc/login` endpoint returns a 302 redirect to `/login` instead of redirecting to the IdP. No errors appear in logs.
+
+**Cause**: Laravel apps behind SSL-terminating load balancers don't know the original request was HTTPS. Without trusting proxy headers, Laravel generates `http://` callback URLs. Zitadel (or any OIDC provider) rejects these because the redirect URI doesn't match the registered `https://` callback.
+
+**Why it's silent**: Laravel doesn't log this as an error because from its perspective, it correctly generated the callback URL - it just doesn't know it should be HTTPS.
+
+**Solution**: Set `APP_PROXIES="*"` to trust the `X-Forwarded-Proto` header from the ALB:
+```hcl
+environment_variables = {
+  APP_URL     = "https://docs.example.com"
+  APP_PROXIES = "*"  # Trust ALB's X-Forwarded-Proto header
+  # ... other variables
+}
+```
+
+**Verification**: After fix, the OIDC login should redirect to the IdP's authorize endpoint with a proper `redirect_uri=https://...` parameter.
+
+**Applies to**: Any Laravel application behind a load balancer (BookStack, Outline if using Laravel, etc.)
+
+### Mattermost Team Edition Requires `read_user` Scope for GitLab OAuth
+**Problem**: Mattermost Team Edition doesn't show the GitLab/SSO login button on the login page, even though `MM_GITLABSETTINGS_ENABLE=true` and all other OAuth settings are configured.
+
+**Cause**: Mattermost Team Edition uses a GitLab-compatible OAuth adapter, NOT standard OIDC. The GitLab adapter strictly requires the `read_user` scope. If you provide standard OIDC scopes like `openid profile email`, the adapter doesn't recognize them and silently disables the SSO button.
+
+**Wrong configuration**:
+```hcl
+MM_GITLABSETTINGS_SCOPE = "openid profile email"  # WRONG for Team Edition
+```
+
+**Correct configuration**:
+```hcl
+MM_GITLABSETTINGS_SCOPE = "read_user"  # Required for GitLab OAuth adapter
+```
+
+**Note**: Mattermost Enterprise Edition has native OIDC support with standard scopes. Team Edition only supports GitLab-style OAuth, which requires adapting your IdP to provide a GitLab-compatible response.
+
+**Zitadel compatibility**: Zitadel's OAuth2 endpoints work with the GitLab adapter when using `read_user` scope and configuring the userinfo endpoint correctly.
+
+### OIDC Auth Method: BASIC vs POST
+**Problem**: OIDC authentication fails even when network connectivity and redirect URIs are correct.
+
+**Cause**: Different applications expect the client secret to be sent differently:
+- **BASIC**: Client ID and secret sent in the `Authorization: Basic` header (base64-encoded)
+- **POST**: Client ID and secret sent in the request body
+
+**In Zitadel Terraform**:
+```hcl
+resource "zitadel_application_oidc" "app" {
+  # Try BASIC first (more common)
+  auth_method_type = "OIDC_AUTH_METHOD_TYPE_BASIC"
+
+  # If BASIC fails, try POST
+  # auth_method_type = "OIDC_AUTH_METHOD_TYPE_POST"
+}
+```
+
+**Known preferences**:
+- BookStack: Works with BASIC
+- Mattermost (GitLab adapter): Works with BASIC
+- Outline: Works with BASIC
+- Some older apps: May require POST
+
+**Debugging tip**: If OIDC fails at the token exchange step (after IdP redirect), try switching the auth method.

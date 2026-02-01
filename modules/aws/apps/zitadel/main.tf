@@ -194,4 +194,7 @@ module "service" {
   health_check_path             = "/debug/healthz"
   health_check_matcher          = "200"
   target_group_protocol_version = "HTTP2" # Required for gRPC/Terraform provider
+
+  # Additional target groups (e.g., internal ALB for service-to-service OIDC)
+  additional_target_group_arns = var.additional_target_group_arns
 }

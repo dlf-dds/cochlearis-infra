@@ -27,7 +27,7 @@ module "ecs" {
 
   # ALB ingress rules (centralized to avoid duplicate rules from app modules)
   alb_security_group_id = module.alb.security_group_id
-  alb_ingress_ports     = [80, 8065, 8080] # 80 for Zulip/BookStack/Docusaurus, 8065 for Mattermost, 8080 for Zitadel
+  alb_ingress_ports     = [80, 3000, 8065, 8080] # 80 for Zulip/BookStack/Docusaurus, 3000 for Outline, 8065 for Mattermost, 8080 for Zitadel
 
   # Internal ALB ingress rules (for service-to-service communication)
   internal_alb_security_group_id = module.alb_internal.security_group_id
@@ -105,9 +105,38 @@ resource "aws_route53_record" "auth_private" {
 }
 
 # =============================================================================
-# Register Zitadel with Internal ALB
+# Internal ALB Target Group for Zitadel
 # =============================================================================
-# Zitadel needs to be accessible via the internal ALB for OIDC discovery
+# Separate target group for the internal ALB (AWS doesn't allow sharing TGs across ALBs)
+
+resource "aws_lb_target_group" "zitadel_internal" {
+  name             = "${var.project}-${var.environment}-zitadel-int"
+  port             = 8080
+  protocol         = "HTTP"
+  protocol_version = "HTTP2" # Required for gRPC/Terraform provider
+  vpc_id           = module.vpc.vpc_id
+  target_type      = "ip"
+
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    interval            = 30
+    matcher             = "200"
+    path                = "/debug/healthz"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    timeout             = 5
+    unhealthy_threshold = 3
+  }
+
+  tags = {
+    Name = "${var.project}-${var.environment}-zitadel-internal"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
 
 resource "aws_lb_listener_rule" "zitadel_internal" {
   listener_arn = module.alb_internal.https_listener_arn
@@ -115,7 +144,7 @@ resource "aws_lb_listener_rule" "zitadel_internal" {
 
   action {
     type             = "forward"
-    target_group_arn = module.zitadel.target_group_arn
+    target_group_arn = aws_lb_target_group.zitadel_internal.arn
   }
 
   condition {
@@ -170,6 +199,9 @@ module "zitadel" {
   # Email configuration (SES)
   smtp_from_email = "noreply@${var.domain_name}"
   smtp_from_name  = "Cochlearis Auth"
+
+  # Register with internal ALB for service-to-service OIDC discovery
+  additional_target_group_arns = [aws_lb_target_group.zitadel_internal.arn]
 }
 
 # =============================================================================
@@ -192,6 +224,7 @@ module "zitadel_oidc" {
   bookstack_domain   = "docs.${var.environment}.${var.domain_name}"
   zulip_domain       = "chat.${var.environment}.${var.domain_name}"
   mattermost_domain  = "mm.${var.environment}.${var.domain_name}"
+  outline_domain     = "wiki.${var.environment}.${var.domain_name}"
 
   depends_on = [module.zitadel]
 }
@@ -349,6 +382,48 @@ module "docusaurus" {
   # Dev-specific configuration
   ecs_cpu    = 256
   ecs_memory = 512
+}
+
+module "outline" {
+  source = "../../../modules/aws/apps/outline"
+
+  project         = var.project
+  environment     = var.environment
+  region          = var.region
+  domain_name     = var.domain_name
+  route53_zone_id = var.route53_zone_id
+
+  # Network
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+
+  # ALB
+  alb_dns_name          = module.alb.alb_dns_name
+  alb_zone_id           = module.alb.alb_zone_id
+  alb_listener_arn      = module.alb.https_listener_arn
+  alb_security_group_id = module.alb.security_group_id
+
+  # ECS
+  ecs_cluster_id              = module.ecs.cluster_id
+  ecs_tasks_security_group_id = module.ecs.tasks_security_group_id
+  task_execution_role_arn     = module.ecs.task_execution_role_arn
+  task_execution_role_name    = module.ecs.task_execution_role_name
+  task_role_arn               = module.ecs.task_role_arn
+  task_role_name              = module.ecs.task_role_name
+
+  # Dev-specific configuration
+  db_instance_class      = "db.t3.micro"
+  db_multi_az            = false
+  db_deletion_protection = false
+  db_skip_final_snapshot = true
+  redis_node_type        = "cache.t3.micro"
+  ecs_cpu                = 512
+  ecs_memory             = 1024
+
+  # OIDC configuration (enabled after running bootstrap script)
+  oidc_issuer            = var.enable_zitadel_oidc ? module.zitadel.url : ""
+  oidc_client_id         = var.enable_zitadel_oidc ? module.zitadel_oidc[0].outline_client_id : ""
+  oidc_client_secret_arn = var.enable_zitadel_oidc ? module.zitadel_oidc[0].outline_oidc_secret_arn : ""
 }
 
 # =============================================================================

@@ -30,3 +30,9 @@ variable "mattermost_domain" {
   description = "Mattermost domain (e.g., mm.dev.example.com)"
   type        = string
 }
+
+variable "outline_domain" {
+  description = "Outline domain (e.g., wiki.dev.example.com)"
+  type        = string
+  default     = ""
+}
