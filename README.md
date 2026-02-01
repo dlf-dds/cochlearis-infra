@@ -66,7 +66,20 @@ Static site for technical docs, API references, and guides. No database — just
 <code>developer.{env}.almondbread.org</code>
 </td>
 </tr>
+<tr>
+<td align="center">
+<img src="logos/outline.png" width="80" alt="Outline"/>
+<br/><strong>Outline</strong>
+</td>
+<td>
+<strong>Knowledge Base</strong><br/>
+Modern wiki for team knowledge with real-time collaboration, nested documents, and full-text search.<br/>
+<code>wiki.{env}.almondbread.org</code>
+</td>
+</tr>
 </table>
+
+> **Note on Service Overlap:** This platform currently includes overlapping capabilities — two chat services (Mattermost, Zulip) and three documentation tools (BookStack, Docusaurus, Outline). This is intentional during evaluation. We expect to consolidate to one chat service and two documentation tools: one lightweight/fast (Docusaurus for developer docs) and one full-featured (BookStack or Outline for team knowledge). That said, there's a case for keeping specialized tools for distinct use cases.
 
 ### Environment URLs
 
@@ -77,55 +90,64 @@ Static site for technical docs, API references, and guides. No database — just
 | **Mattermost** (Chat) | mm.dev.almondbread.org | mm.staging.almondbread.org | mm.almondbread.org |
 | **Zulip** (Chat) | chat.dev.almondbread.org | chat.staging.almondbread.org | chat.almondbread.org |
 | **Docusaurus** (Dev Docs) | developer.dev.almondbread.org | developer.staging.almondbread.org | developer.almondbread.org |
+| **Outline** (Wiki) | wiki.dev.almondbread.org | wiki.staging.almondbread.org | wiki.almondbread.org |
 
 All authenticated services use Zitadel SSO — one login for everything. Docusaurus is public (no auth required).
 
 ### Architecture
 
 ```
-                                         INTERNET
-                                            |
-                                            v
-+=============================================================================+
-|                              PUBLIC SUBNETS                                 |
-|                                                                             |
-|    +--------------------------------------------------------------------+   |
-|    |                   Application Load Balancer (ALB)                  |   |
-|    |                        TLS termination (:443)                      |   |
-|    |                                                                    |   |
-|    |   auth.*       docs.*       mm.*       chat.*       developer.*    |   |
-|    +--------------------------------------------------------------------+   |
-|           |            |           |           |              |             |
-+=============================================================================+
-            |            |           |           |              |
-            v            v           v           v              v
-+=============================================================================+
-|                              PRIVATE SUBNETS                                |
-|                                                                             |
-|  +-----------+  +-----------+  +-----------+  +------------+  +-----------+ |
-|  |  Zitadel  |  | BookStack |  | Mattermost|  |   Zulip    |  | Docusaur  | |
-|  |   :8080   |  |    :80    |  |   :8065   |  | +---+----+ |  |    :80    | |
-|  |           |  |           |  |           |  | |App|PG  | |  | (static)  | |
-|  |           |  |           |  |           |  | |:80|5432| |  |           | |
-|  +-----------+  +-----------+  +-----------+  | +---+----+ |  +-----------+ |
-|        |              |              |        +------------+        |       |
-|        |              |              |              |               |       |
-|        v              v              v              v               |       |
-|  +-----------+  +-----------+  +-----------+  +-----------+         |       |
-|  |    RDS    |  |    RDS    |  |    RDS    |  |    EFS    |    (no db)      |
-|  | PostgreSQL|  |   MySQL   |  | PostgreSQL|  | (PG data) |                 |
-|  +-----------+  +-----------+  +-----------+  +-----------+                 |
-|                                                                             |
-|                          +-----------+                                      |
-|                          |ElastiCache| <-- Zulip Redis                      |
-|                          |   Redis   |                                      |
-|                          +-----------+                                      |
-+=============================================================================+
+                                              INTERNET
+                                                 |
+                                                 v
++=====================================================================================+
+|                                   PUBLIC SUBNETS                                    |
+|                                                                                     |
+|    +----------------------------------------------------------------------------+   |
+|    |                     Application Load Balancer (ALB)                        |   |
+|    |                          TLS termination (:443)                            |   |
+|    |                                                                            |   |
+|    |  auth.*    docs.*    mm.*    chat.*    developer.*    wiki.*               |   |
+|    +----------------------------------------------------------------------------+   |
+|        |          |         |        |            |           |                     |
++=====================================================================================+
+         |          |         |        |            |           |
+         v          v         v        v            v           v
++=====================================================================================+
+|                                   PRIVATE SUBNETS                                   |
+|                                                                                     |
+|  +---------+ +---------+ +---------+ +----------+ +---------+ +---------+           |
+|  | Zitadel | |BookStack| |Mattermos| |  Zulip   | |Docusaur | | Outline |           |
+|  |  :8080  | |   :80   | |  :8065  | | +--+---+ | |   :80   | |  :3000  |           |
+|  |         | |         | |         | | |App|PG | | |(static)| |         |           |
+|  |         | |         | |         | | |:80|   | | |        | |         |           |
+|  +---------+ +---------+ +---------+ | +--+---+ | +---------+ +---------+           |
+|       |           |           |      +----------+      |           |                |
+|       |           |           |           |            |           |                |
+|       v           v           v           v            |           v                |
+|  +---------+ +---------+ +---------+ +---------+       |      +---------+           |
+|  |   RDS   | |   RDS   | |   RDS   | |   EFS   |  (no db)     |   RDS   |           |
+|  |PostgreSQ| |  MySQL  | |PostgreSQ| |(PG data)|              |PostgreSQ|           |
+|  +---------+ +---------+ +---------+ +---------+              +---------+           |
+|                                                                    |                |
+|                          +-------------+                           v                |
+|                          | ElastiCache | <-- Zulip          +-------------+         |
+|                          |    Redis    |                    | ElastiCache |         |
+|                          +-------------+                    |    Redis    |         |
+|                                                             +-------------+         |
+|                                                                    |                |
+|                                                                    v                |
+|                                                               +---------+           |
+|                                                               |   S3    |           |
+|                                                               | Uploads |           |
+|                                                               +---------+           |
++=====================================================================================+
 ```
 
 **Service patterns:**
 - **Zitadel, BookStack, Mattermost**: Standard ECS services with managed RDS databases
 - **Zulip**: Sidecar pattern — PostgreSQL runs in the same ECS task, persists to EFS
+- **Outline**: Full-featured — RDS PostgreSQL, ElastiCache Redis, S3 for uploads
 - **Docusaurus**: Stateless — containerized static site with no database
 
 > **Why ECS for Docusaurus?** Static sites are typically deployed via S3 + CloudFront, which is cheaper and simpler for pure static hosting. We chose ECS instead to maintain consistency across all services — everything deploys the same way, tears down the same way, and appears in the same monitoring dashboards. This avoids resource sprawl (orphaned S3 buckets, forgotten CloudFront distributions) and keeps `terraform destroy` predictable.
@@ -284,7 +306,7 @@ terraform apply  # Can take 15-20 minutes
 
 ## Enabling SSO (One Manual Step Required)
 
-After initial deployment, enable SSO for BookStack, Zulip, and Mattermost:
+After initial deployment, enable SSO for BookStack, Zulip, Mattermost, and Outline:
 
 **⚠️ Manual Step: Create a Service User with PAT in Zitadel**
 
