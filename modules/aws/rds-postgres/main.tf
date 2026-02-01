@@ -52,8 +52,13 @@ resource "random_password" "master" {
   special = false # Avoid special chars that break database connection URLs
 }
 
+# Random suffix to avoid Secrets Manager name collision on recreate
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 resource "aws_secretsmanager_secret" "master_password" {
-  name        = "${local.name_prefix}-rds-${var.identifier}-master-password"
+  name        = "${local.name_prefix}-rds-${var.identifier}-master-password-${random_id.secret_suffix.hex}"
   description = "Master password for RDS instance ${var.identifier}"
 
   tags = {

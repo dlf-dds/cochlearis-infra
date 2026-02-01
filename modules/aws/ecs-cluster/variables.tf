@@ -65,11 +65,22 @@ variable "enable_service_discovery" {
 variable "alb_security_group_id" {
   description = "Security group ID of the ALB for ingress rules"
   type        = string
-  default     = null
 }
 
 variable "alb_ingress_ports" {
-  description = "List of ports to allow ingress from ALB to ECS tasks"
+  description = "List of ports to allow ingress from ALB to ECS tasks. Leave empty to disable rules."
   type        = list(number)
-  default     = [80, 8080]
+  default     = []
+}
+
+variable "internal_alb_security_group_id" {
+  description = "Security group ID of the internal ALB for ingress rules"
+  type        = string
+  default     = ""
+}
+
+variable "internal_alb_ingress_ports" {
+  description = "List of ports to allow ingress from internal ALB to ECS tasks. Leave empty to disable rules."
+  type        = list(number)
+  default     = []
 }

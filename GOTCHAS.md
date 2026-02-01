@@ -399,33 +399,32 @@ The OIDC endpoint works from the public internet (curl returns 200), but fails f
 3. Traffic needs to come back in through the ALB
 4. The return path breaks because the source IP gets translated
 
+**What DOESN'T work**:
+- **Route53 Private Hosted Zone with internet-facing ALB**: Even with a private zone pointing to the ALB's DNS name, an internet-facing ALB only has public IPs. The private zone resolves to the same public IPs, so the hairpin NAT issue persists. This approach only works if the ALB is internal or dual-stack.
+
 **Solutions** (in order of preference):
-1. **Route53 Private Hosted Zone** (recommended): Create a private hosted zone in the VPC that resolves `auth.dev.almondbread.org` to the ALB's internal DNS name (not the public IP). This keeps traffic internal to the VPC.
+1. **Internal ALB for service-to-service communication** (recommended): Create a separate internal ALB that apps use for OIDC discovery and inter-service calls. The internal ALB has private IPs that are directly routable within the VPC.
    ```hcl
-   resource "aws_route53_zone" "private" {
-     name = "dev.almondbread.org"
-     vpc {
-       vpc_id = aws_vpc.main.id
-     }
+   # Internal ALB for service-to-service communication
+   resource "aws_lb" "internal" {
+     name               = "${var.project}-${var.environment}-internal"
+     internal           = true  # Key difference: internal = true
+     load_balancer_type = "application"
+     security_groups    = [aws_security_group.internal_alb.id]
+     subnets            = var.private_subnet_ids
    }
 
-   resource "aws_route53_record" "auth_private" {
-     zone_id = aws_route53_zone.private.zone_id
-     name    = "auth.dev.almondbread.org"
-     type    = "A"
-     alias {
-       name                   = aws_lb.main.dns_name
-       zone_id                = aws_lb.main.zone_id
-       evaluate_target_health = true
-     }
-   }
+   # Apps use internal ALB URL for OIDC issuer
+   # e.g., https://auth-internal.dev.almondbread.org
    ```
 
-2. **Service Discovery** (alternative): Use AWS Cloud Map service discovery for internal service-to-service communication. Configure apps to use internal endpoints like `zitadel.cochlearis.internal` instead of public URLs.
+   Configure apps to use the internal ALB endpoint for OIDC discovery while users access the public ALB.
 
-3. **Split Horizon DNS**: Different DNS responses for internal vs external queries.
+2. **Service Discovery with Cloud Map**: Use AWS Cloud Map for internal service discovery. Configure apps to use internal DNS names like `zitadel.cochlearis.internal` for server-to-server communication.
 
-**Note**: This issue affects any scenario where ECS services need to call each other through the public load balancer. For ECS-to-ECS communication, prefer internal networking.
+3. **VPC Endpoints / PrivateLink**: More complex but provides private connectivity to the ALB without NAT gateway involvement.
+
+**Note**: This issue affects any scenario where ECS services need to call each other through a public load balancer. For ECS-to-ECS communication, always prefer internal networking.
 
 ### Database Password Special Characters Break Connection URLs
 **Problem**: Mattermost crashes with "net/url: invalid userinfo" when connecting to RDS PostgreSQL.
@@ -441,3 +440,49 @@ resource "random_password" "master" {
 ```
 
 **Note**: This reduces password entropy slightly, but a 32-character alphanumeric password is still secure. Alternatively, ensure all services use escaped/quoted passwords rather than URL-style connection strings.
+
+### AWS Secrets Manager Force-Delete Has Propagation Delay
+**Problem**: After running `aws secretsmanager delete-secret --force-delete-without-recovery`, Terraform still fails with "secret with this name is already scheduled for deletion" when trying to recreate secrets.
+
+**Cause**: AWS Secrets Manager has eventual consistency. Even with `--force-delete-without-recovery`, the deletion takes 30-120 seconds to propagate across AWS infrastructure. The API returns success immediately, but the secret name remains reserved until full propagation completes.
+
+**Solutions**:
+1. **Use unique names (recommended)**: Add random suffixes to secret names to avoid collision permanently:
+   ```hcl
+   resource "random_id" "secret_suffix" {
+     byte_length = 4
+   }
+
+   resource "aws_secretsmanager_secret" "master_password" {
+     name = "${local.name_prefix}-master-password-${random_id.secret_suffix.hex}"
+   }
+   ```
+2. **Wait and retry**: Wait 2-3 minutes after force-deleting secrets before running `terraform apply`
+3. **Import existing secrets**: If the secret still exists, import it into Terraform state instead of recreating
+
+**Workaround script**:
+```bash
+# Force delete all secrets matching a pattern
+for secret in $(aws secretsmanager list-secrets --include-planned-deletion \
+    --query 'SecretList[?contains(Name, `myprefix`)].Name' --output text); do
+  aws secretsmanager delete-secret --secret-id "$secret" --force-delete-without-recovery
+done
+
+# Wait for propagation
+sleep 120
+
+# Then run terraform apply
+terraform apply
+```
+
+**Note**: This is a known AWS limitation, not a Terraform bug. The `list-secrets` command may return empty even while deletion is still propagating internally.
+
+**Important**: When using random suffixes, ensure ALL modules that create Secrets Manager secrets use this pattern. Inconsistent application will cause failures when some secrets exist and others don't. Modules that need this pattern:
+- `modules/aws/rds-postgres/main.tf`
+- `modules/aws/rds-mysql/main.tf`
+- `modules/aws/ses-smtp-user/main.tf`
+- `modules/aws/apps/bookstack/main.tf`
+- `modules/aws/apps/mattermost/main.tf`
+- `modules/aws/apps/zitadel/main.tf`
+- `modules/aws/apps/zulip/main.tf`
+- `modules/aws/zitadel-oidc/main.tf`

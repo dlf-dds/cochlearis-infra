@@ -66,8 +66,9 @@ resource "aws_security_group" "ecs_tasks" {
 }
 
 # Ingress rules from ALB to ECS tasks (centralized to avoid duplicate rules)
+# Note: To disable these rules, pass an empty list for alb_ingress_ports
 resource "aws_security_group_rule" "alb_to_ecs" {
-  for_each = var.alb_security_group_id != null ? toset([for p in var.alb_ingress_ports : tostring(p)]) : toset([])
+  for_each = toset([for p in var.alb_ingress_ports : tostring(p)])
 
   type                     = "ingress"
   from_port                = tonumber(each.value)
@@ -76,6 +77,20 @@ resource "aws_security_group_rule" "alb_to_ecs" {
   source_security_group_id = var.alb_security_group_id
   security_group_id        = aws_security_group.ecs_tasks.id
   description              = "Allow traffic from ALB on port ${each.value}"
+}
+
+# Ingress rules from internal ALB to ECS tasks (for service-to-service communication)
+# Note: To disable these rules, pass an empty list for internal_alb_ingress_ports
+resource "aws_security_group_rule" "internal_alb_to_ecs" {
+  for_each = toset([for p in var.internal_alb_ingress_ports : tostring(p)])
+
+  type                     = "ingress"
+  from_port                = tonumber(each.value)
+  to_port                  = tonumber(each.value)
+  protocol                 = "tcp"
+  source_security_group_id = var.internal_alb_security_group_id
+  security_group_id        = aws_security_group.ecs_tasks.id
+  description              = "Allow traffic from internal ALB on port ${each.value}"
 }
 
 resource "aws_iam_role" "ecs_task_execution" {

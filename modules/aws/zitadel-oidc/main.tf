@@ -12,6 +12,11 @@ terraform {
   }
 }
 
+# Random suffix to avoid Secrets Manager name collision on recreate
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 # Create project for all cochlearis applications
 resource "zitadel_project" "main" {
   name                     = var.project_name
@@ -52,7 +57,7 @@ resource "zitadel_application_oidc" "bookstack" {
 
 # Store BookStack OIDC credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "bookstack_oidc" {
-  name        = "${var.secret_prefix}-bookstack-oidc"
+  name        = "${var.secret_prefix}-bookstack-oidc-${random_id.secret_suffix.hex}"
   description = "BookStack OIDC client credentials from Zitadel"
 
   tags = {
@@ -98,7 +103,7 @@ resource "zitadel_application_oidc" "zulip" {
 
 # Store Zulip OIDC credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "zulip_oidc" {
-  name        = "${var.secret_prefix}-zulip-oidc"
+  name        = "${var.secret_prefix}-zulip-oidc-${random_id.secret_suffix.hex}"
   description = "Zulip OIDC client credentials from Zitadel"
 
   tags = {
@@ -145,7 +150,7 @@ resource "zitadel_application_oidc" "mattermost" {
 
 # Store Mattermost OIDC credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "mattermost_oidc" {
-  name        = "${var.secret_prefix}-mattermost-oidc"
+  name        = "${var.secret_prefix}-mattermost-oidc-${random_id.secret_suffix.hex}"
   description = "Mattermost OIDC client credentials from Zitadel"
 
   tags = {

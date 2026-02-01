@@ -37,3 +37,8 @@ output "admin_username" {
   description = "Admin username for initial login"
   value       = var.admin_username
 }
+
+output "target_group_arn" {
+  description = "ARN of the target group for Zitadel ECS service"
+  value       = module.service.target_group_arn
+}

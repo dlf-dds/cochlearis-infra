@@ -53,8 +53,13 @@ resource "random_password" "master" {
   override_special = "!#$%&*()-_=+[]{}<>:?"
 }
 
+# Random suffix to avoid Secrets Manager name collision on recreate
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 resource "aws_secretsmanager_secret" "master_password" {
-  name        = "${local.name_prefix}-mysql-${var.identifier}-master-password"
+  name        = "${local.name_prefix}-mysql-${var.identifier}-master-password-${random_id.secret_suffix.hex}"
   description = "Master password for RDS MySQL instance ${var.identifier}"
 
   tags = {

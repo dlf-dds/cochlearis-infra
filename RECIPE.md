@@ -1,6 +1,8 @@
 # Infrastructure Recipe
 
-A first-principles guide to building this multi-cloud infrastructure repository from scratch. This document explains the design patterns, architecture decisions, and implementation approach so the same system can be recreated without copying specific code.
+A first-principles guide to building the **Almondbread Collaboration Services** infrastructure from scratch. This document explains the design patterns, architecture decisions, and implementation approach so the same system can be recreated for a different cloud account without copying specific code.
+
+> **Note:** This repo currently deploys to the `cochlearis` AWS account. To adapt for another account, update the `project` variable and backend configuration.
 
 ---
 
@@ -109,10 +111,12 @@ These are the building blocks. Each does one thing well.
 - Environment variables (map), secrets (map of ARNs)
 - Optional: command override, health check config
 - ALB integration: listener ARN, host header, health check path
+- Sidecar containers (list of container definitions)
+- EFS volumes (list of volume configurations)
 
 **Resources**:
 - CloudWatch log group
-- Task definition with container definition
+- Task definition with container definition(s)
 - Target group (if ALB integration enabled)
 - Listener rule for host-based routing
 - ECS service with deployment circuit breaker
@@ -121,6 +125,46 @@ These are the building blocks. Each does one thing well.
 - Secrets use Secrets Manager ARN format: `arn:...:secret-name:json-key::`
 - Container command passed via `command` field in container definition (for images requiring args)
 - Health check supports ALB health check (HTTP) and container health check (CMD)
+
+**Sidecar Container Pattern**:
+```hcl
+sidecar_containers = [
+  {
+    name      = "postgres"
+    image     = "postgres:14"
+    port      = 5432
+    essential = true
+    environment_variables = {
+      POSTGRES_USER     = "zulip"
+      POSTGRES_PASSWORD = "..."
+    }
+    health_check = {
+      command      = ["CMD-SHELL", "pg_isready -U zulip"]
+      interval     = 30
+      timeout      = 5
+      retries      = 3
+      start_period = 60
+    }
+    mount_points = [
+      {
+        volume_name    = "postgres-data"
+        container_path = "/var/lib/postgresql/data"
+      }
+    ]
+  }
+]
+
+efs_volumes = [
+  {
+    name            = "postgres-data"
+    file_system_id  = module.efs.file_system_id
+    access_point_id = module.efs.access_point_ids["postgres"]
+    container_path  = "/var/lib/postgresql/data"
+  }
+]
+```
+
+The main container can use `depends_on` with condition `HEALTHY` to wait for the sidecar.
 
 #### ALB Module
 **Purpose**: Shared application load balancer for all services
@@ -170,6 +214,27 @@ These are the building blocks. Each does one thing well.
 - Replication group (single node for dev, multi-node for prod)
 
 **Design Decision**: Replication group even for single node - allows scaling without replacement.
+
+#### EFS Module
+**Purpose**: Persistent storage for containers (required for sidecar databases)
+
+**Inputs**:
+- Project, environment
+- VPC ID, private subnet IDs
+- Access point configurations (path, POSIX user/group)
+- Allowed security group IDs
+
+**Resources**:
+- EFS file system with encryption enabled
+- Mount targets in each private subnet
+- Security group for NFS (port 2049)
+- Access points for container-specific paths
+
+**Outputs**: File system ID, access point IDs, security group ID
+
+**Design Decision**: Access points provide isolation between containers sharing the same EFS.
+
+**Warning**: EFS has no built-in backup. Add AWS Backup plan for production use.
 
 #### ACM Certificate Module
 **Purpose**: TLS certificates with DNS validation
@@ -287,6 +352,58 @@ AUTH_METHOD=oidc
 OIDC_ISSUER=https://auth.{env}.{domain}
 OIDC_ISSUER_DISCOVER=true
 ```
+
+#### Mattermost (Team Chat)
+**Domain**: `mm.{env}.{domain}`
+**Components**: PostgreSQL, ECS service
+**Container Requirements**:
+- Port: 8065
+- Health check: `/api/v4/system/ping`
+- ARM64 compatible (unlike Zulip)
+
+**Database Configuration**:
+- Mattermost requires a full DSN connection string
+- Store complete DSN in Secrets Manager: `postgres://user:pass@host:port/db?sslmode=require`
+- Reference as single secret (not JSON extraction)
+
+**OIDC Configuration** (for SSO via GitLab adapter):
+```
+MM_GITLABSETTINGS_ENABLE=true
+MM_GITLABSETTINGS_ID={client_id}
+MM_GITLABSETTINGS_SECRET={client_secret}
+MM_GITLABSETTINGS_AUTHENDPOINT=https://auth.{env}.{domain}/oauth/v2/authorize
+MM_GITLABSETTINGS_TOKENENDPOINT=https://auth.{env}.{domain}/oauth/v2/token
+MM_GITLABSETTINGS_USERAPIENDPOINT=https://auth.{env}.{domain}/oidc/v1/userinfo
+```
+
+**Note**: Mattermost Team Edition doesn't support generic OIDC. The GitLab adapter works with Zitadel because Zitadel's userinfo endpoint returns compatible fields.
+
+#### Zulip - Sidecar Container Pattern
+
+Zulip requires PostgreSQL with full-text search dictionaries (hunspell). AWS RDS doesn't support custom dictionaries, so we use a **sidecar container pattern**:
+
+```
+┌─────────────────────────────────────────────────┐
+│                  ECS Task                        │
+│  ┌─────────────┐      ┌──────────────────────┐  │
+│  │   Zulip     │─────▶│  PostgreSQL Sidecar  │  │
+│  │  (port 80)  │      │    (port 5432)       │  │
+│  └─────────────┘      └──────────────────────┘  │
+│         │                       │               │
+│         ▼                       ▼               │
+│    ALB Target              EFS Volume           │
+│                        (data persistence)       │
+└─────────────────────────────────────────────────┘
+```
+
+**Implementation**:
+- Main container: `zulip/docker-zulip` on port 80
+- Sidecar: `postgres:14` with hunspell dictionaries
+- EFS volume mounted to `/var/lib/postgresql/data`
+- Sidecar marked as `essential: true` with health check
+- Main container `depends_on` sidecar with `HEALTHY` condition
+
+**Warning**: EFS has no automatic backups. See [PHOENIX.md](PHOENIX.md) for data persistence gaps.
 
 ### Layer 3: Governance Module
 
@@ -411,21 +528,92 @@ Internet
 
 ---
 
+## Local Development
+
+The `local/` directory provides a Docker Compose stack that mirrors the AWS deployment for local testing.
+
+```bash
+cd local
+make up          # Start all services
+make logs        # View logs
+make down        # Stop all services
+```
+
+**Services available locally**:
+- Zitadel: http://localhost:8080
+- BookStack: http://localhost:6875
+- Mattermost: http://localhost:8065
+
+**Note**: Zulip is excluded from local development because it has no ARM64 image. Use Mattermost for chat testing on Apple Silicon.
+
+---
+
 ## Bootstrap Process
 
-1. **Create S3 bucket and DynamoDB table** for Terraform state (one-time, manual or script)
+### 1. Create Terraform State Backend
 
-2. **Configure DNS**: Create Route53 hosted zone for your domain
+```bash
+./scripts/bootstrap-aws
+```
 
-3. **Verify SES**: Request production access, verify domain
+This creates the S3 bucket and DynamoDB table for state locking.
 
-4. **Run Terraform**:
+### 2. Configure DNS
+
+Create Route53 hosted zone for your domain and note the zone ID.
+
+### 3. Create terraform.tfvars
+
+Copy the example file and fill in values:
+
+```bash
+cd environments/aws/dev
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values
+```
+
+### 4. Initial Terraform Apply
+
+```bash
+aws-vault exec {profile} --duration=2h
+terraform init
+terraform plan
+terraform apply
+```
+
+This takes 15-20 minutes for initial creation.
+
+### 5. Configure Zitadel OIDC (Manual Step Required)
+
+After Zitadel is running, you must manually create a service account for OIDC automation:
+
+1. Log into Zitadel: `https://auth.{env}.{domain}/ui/console`
+2. Username: `admin@zitadel.auth.{env}.{domain}`
+3. Get password from Secrets Manager:
    ```bash
-   cd environments/aws/dev
-   terraform init
-   terraform plan
-   terraform apply
+   aws secretsmanager get-secret-value \
+     --secret-id {project}-{env}-zitadel-master-key \
+     --query 'SecretString' --output text | jq -r '.admin_password'
    ```
+4. Create service user: Organization → Service Users → +New
+5. Name: "terraform-bootstrap", grant **ORG_OWNER** role
+6. Create Personal Access Token (PAT) and save it
+
+Then run the bootstrap script:
+
+```bash
+ZITADEL_PAT="your-token" ./bootstrap-zitadel-oidc.sh
+```
+
+Finally, apply with OIDC enabled:
+
+```bash
+terraform apply -var="enable_zitadel_oidc=true"
+```
+
+### 6. Verify SES (If Using Email)
+
+SES requires domain verification and production access request for sending emails.
 
 ---
 
@@ -481,15 +669,35 @@ Internet
 
 Before marking infrastructure complete:
 
+**Basic Functionality**:
 - [ ] All services return 200 on health endpoints
 - [ ] DNS resolves correctly for all domains
 - [ ] TLS certificates valid and not expiring soon
 - [ ] Secrets Manager secrets populated
 - [ ] CloudWatch logs receiving container output
+
+**SSO Integration**:
+- [ ] Can log into Zitadel admin console
+- [ ] OIDC clients created for each service
+- [ ] Can log into BookStack via Zitadel SSO
+- [ ] Can log into Mattermost via Zitadel SSO
+- [ ] Can log into Zulip via Zitadel SSO
+
+**Governance**:
 - [ ] Budget alerts configured
 - [ ] SNS subscription confirmed (check email)
+- [ ] All resources have required tags
+
+**Operations**:
 - [ ] Can SSH tunnel to RDS for debugging
 - [ ] Terraform plan shows no changes (idempotent)
+- [ ] Local Docker Compose stack starts successfully
+
+**Phoenix Readiness** (see [PHOENIX.md](PHOENIX.md)):
+- [ ] RDS automated backups enabled
+- [ ] EFS backup plan configured (if using sidecar Postgres)
+- [ ] S3 versioning enabled on upload buckets
+- [ ] Encryption keys protected with lifecycle ignore
 
 ---
 
@@ -502,3 +710,13 @@ Before marking infrastructure complete:
 5. **S3 VPC endpoint** (free, reduces NAT traffic)
 6. **Fargate Spot** for non-critical workloads (up to 70% savings)
 7. **Reserved capacity** for prod databases (1-year commitment = 30-40% savings)
+
+---
+
+## Related Documentation
+
+- [README.md](README.md) - Quick start and overview
+- [EXCELLENCE.md](EXCELLENCE.md) - Principles and philosophy behind this repository
+- [PHOENIX.md](PHOENIX.md) - Gap analysis for destroy/rebuild capability
+- [GOTCHAS.md](GOTCHAS.md) - Troubleshooting and lessons learned
+- Module READMEs - Auto-generated via `terraform-docs`

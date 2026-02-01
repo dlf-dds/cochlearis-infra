@@ -44,8 +44,13 @@ resource "random_password" "postgres_password" {
   special = false
 }
 
+# Random suffix to avoid Secrets Manager name collision on recreate
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 resource "aws_secretsmanager_secret" "postgres" {
-  name        = "${local.name_prefix}-zulip-postgres"
+  name        = "${local.name_prefix}-zulip-postgres-${random_id.secret_suffix.hex}"
   description = "Zulip PostgreSQL password"
 
   tags = {
@@ -165,7 +170,7 @@ resource "random_password" "secret_key" {
 }
 
 resource "aws_secretsmanager_secret" "secrets" {
-  name        = "${local.name_prefix}-zulip-secrets"
+  name        = "${local.name_prefix}-zulip-secrets-${random_id.secret_suffix.hex}"
   description = "Zulip application secrets"
 
   tags = {

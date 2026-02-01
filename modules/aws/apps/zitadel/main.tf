@@ -64,8 +64,13 @@ resource "random_password" "admin_password" {
   special = true
 }
 
+# Random suffix to avoid Secrets Manager name collision on recreate
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 resource "aws_secretsmanager_secret" "master_key" {
-  name        = "${local.name_prefix}-zitadel-master-key"
+  name        = "${local.name_prefix}-zitadel-master-key-${random_id.secret_suffix.hex}"
   description = "Zitadel master key for encryption"
 
   tags = {

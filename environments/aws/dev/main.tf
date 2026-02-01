@@ -28,6 +28,10 @@ module "ecs" {
   # ALB ingress rules (centralized to avoid duplicate rules from app modules)
   alb_security_group_id = module.alb.security_group_id
   alb_ingress_ports     = [80, 8065, 8080] # 80 for Zulip/BookStack/Docusaurus, 8065 for Mattermost, 8080 for Zitadel
+
+  # Internal ALB ingress rules (for service-to-service communication)
+  internal_alb_security_group_id = module.alb_internal.security_group_id
+  internal_alb_ingress_ports     = [8080] # 8080 for Zitadel internal access
 }
 
 # Primary SSL certificate (for ALB default - using auth domain)
@@ -40,22 +44,39 @@ module "primary_certificate" {
   zone_id     = var.route53_zone_id
 }
 
-# Shared ALB for all services
+# Shared ALB for all services (internet-facing for user traffic)
 module "alb" {
   source = "../../../modules/aws/alb"
 
-  project           = var.project
-  environment       = var.environment
-  vpc_id            = module.vpc.vpc_id
-  public_subnet_ids = module.vpc.public_subnet_ids
-  certificate_arn   = module.primary_certificate.validation_certificate_arn
+  project         = var.project
+  environment     = var.environment
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.public_subnet_ids
+  certificate_arn = module.primary_certificate.validation_certificate_arn
+  internal        = false
+}
+
+# Internal ALB for service-to-service communication (OIDC, etc.)
+# This solves the hairpin NAT issue - services can reach each other directly
+module "alb_internal" {
+  source = "../../../modules/aws/alb"
+
+  project             = var.project
+  environment         = var.environment
+  vpc_id              = module.vpc.vpc_id
+  subnet_ids          = module.vpc.private_subnet_ids
+  certificate_arn     = module.primary_certificate.validation_certificate_arn
+  internal            = true
+  name_suffix         = "internal"
+  allowed_cidr_blocks = ["10.0.0.0/16"] # VPC CIDR only
 }
 
 # =============================================================================
 # Private DNS Zone for Internal Service-to-Service Communication
 # =============================================================================
-# Resolves service domains to ALB within the VPC, avoiding hairpin NAT issues
-# where ECS tasks would otherwise need to go out to internet and back in.
+# Resolves auth.dev.almondbread.org to INTERNAL ALB within the VPC.
+# This is the key to solving hairpin NAT - apps calling Zitadel for OIDC
+# discovery get routed to the internal ALB which has private IPs.
 
 resource "aws_route53_zone" "private" {
   name = "${var.environment}.${var.domain_name}"
@@ -70,52 +91,37 @@ resource "aws_route53_zone" "private" {
   }
 }
 
-# Internal DNS records pointing to ALB (split-horizon DNS)
+# Auth domain points to INTERNAL ALB (this is what apps use for OIDC)
 resource "aws_route53_record" "auth_private" {
   zone_id = aws_route53_zone.private.zone_id
   name    = "auth.${var.environment}.${var.domain_name}"
   type    = "A"
 
   alias {
-    name                   = module.alb.alb_dns_name
-    zone_id                = module.alb.alb_zone_id
+    name                   = module.alb_internal.alb_dns_name
+    zone_id                = module.alb_internal.alb_zone_id
     evaluate_target_health = true
   }
 }
 
-resource "aws_route53_record" "docs_private" {
-  zone_id = aws_route53_zone.private.zone_id
-  name    = "docs.${var.environment}.${var.domain_name}"
-  type    = "A"
+# =============================================================================
+# Register Zitadel with Internal ALB
+# =============================================================================
+# Zitadel needs to be accessible via the internal ALB for OIDC discovery
 
-  alias {
-    name                   = module.alb.alb_dns_name
-    zone_id                = module.alb.alb_zone_id
-    evaluate_target_health = true
+resource "aws_lb_listener_rule" "zitadel_internal" {
+  listener_arn = module.alb_internal.https_listener_arn
+  priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = module.zitadel.target_group_arn
   }
-}
 
-resource "aws_route53_record" "chat_private" {
-  zone_id = aws_route53_zone.private.zone_id
-  name    = "chat.${var.environment}.${var.domain_name}"
-  type    = "A"
-
-  alias {
-    name                   = module.alb.alb_dns_name
-    zone_id                = module.alb.alb_zone_id
-    evaluate_target_health = true
-  }
-}
-
-resource "aws_route53_record" "mm_private" {
-  zone_id = aws_route53_zone.private.zone_id
-  name    = "mm.${var.environment}.${var.domain_name}"
-  type    = "A"
-
-  alias {
-    name                   = module.alb.alb_dns_name
-    zone_id                = module.alb.alb_zone_id
-    evaluate_target_health = true
+  condition {
+    host_header {
+      values = ["auth.${var.environment}.${var.domain_name}"]
+    }
   }
 }
 

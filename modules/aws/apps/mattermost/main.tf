@@ -20,6 +20,13 @@ module "certificate" {
   zone_id     = var.route53_zone_id
 }
 
+# Add certificate to ALB
+resource "aws_lb_listener_certificate" "main" {
+  count           = var.create_certificate ? 1 : 0
+  listener_arn    = var.alb_listener_arn
+  certificate_arn = module.certificate[0].validation_certificate_arn
+}
+
 # Route53 record
 resource "aws_route53_record" "main" {
   zone_id = var.route53_zone_id
@@ -54,9 +61,14 @@ module "database" {
   skip_final_snapshot = var.db_skip_final_snapshot
 }
 
+# Random suffix to avoid Secrets Manager name collision on recreate
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 # Database connection string secret (Mattermost requires full DSN)
 resource "aws_secretsmanager_secret" "database_url" {
-  name        = "${local.name_prefix}-mattermost-database-url"
+  name        = "${local.name_prefix}-mattermost-database-url-${random_id.secret_suffix.hex}"
   description = "Mattermost database connection string"
 
   tags = {

@@ -418,6 +418,71 @@ Each component gets only the permissions it needs:
 
 **Why it matters:** If one component is compromised, the blast radius is limited.
 
+### Signed Commits
+
+All commits to infrastructure repositories should be cryptographically signed. This proves:
+1. **Identity** — The commit actually came from who it claims
+2. **Integrity** — The commit hasn't been tampered with
+3. **Non-repudiation** — The author can't deny making the commit
+
+**Why it matters for infrastructure:** A malicious actor who gains access to a developer's machine or GitHub account could push backdoored Terraform code. Signed commits make this significantly harder — they'd need to also compromise the signing key.
+
+**Setup GPG signing (recommended):**
+
+```bash
+# 1. Generate a GPG key (if you don't have one)
+gpg --full-generate-key
+# Choose: RSA and RSA, 4096 bits, key does not expire
+# Use your Git email address
+
+# 2. Get your key ID
+gpg --list-secret-keys --keyid-format=long
+# Look for: sec   rsa4096/YOUR_KEY_ID
+
+# 3. Configure Git to use it
+git config --global user.signingkey YOUR_KEY_ID
+git config --global commit.gpgsign true
+git config --global tag.gpgsign true
+
+# 4. Add to your shell profile (bash/zsh)
+export GPG_TTY=$(tty)
+
+# 5. Add public key to GitHub
+gpg --armor --export YOUR_KEY_ID
+# Copy output to: GitHub → Settings → SSH and GPG keys → New GPG key
+```
+
+**Alternative: SSH signing (simpler, Git 2.34+):**
+
+```bash
+# Use your existing SSH key for signing
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git config --global commit.gpgsign true
+
+# Add SSH key to GitHub as a "signing key" (not just authentication)
+# GitHub → Settings → SSH and GPG keys → New SSH key → Key type: Signing Key
+```
+
+**Verify it works:**
+
+```bash
+# Make a signed commit
+git commit -S -m "test signed commit"
+
+# Verify signature
+git log --show-signature -1
+```
+
+**Enforcing in GitHub:**
+- Repository Settings → Branches → Branch protection rules
+- Enable "Require signed commits" for `main`
+
+**References:**
+- [GitHub: Signing commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits)
+- [GitHub: SSH commit verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification#ssh-commit-signature-verification)
+- [GPG best practices](https://riseup.net/en/security/message-security/openpgp/gpg-best-practices)
+
 ---
 
 ## Principle 4: Automated Verification

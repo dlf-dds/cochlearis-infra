@@ -39,11 +39,16 @@ resource "aws_iam_access_key" "main" {
   user = aws_iam_user.main.name
 }
 
+# Random suffix to avoid Secrets Manager name collision on recreate
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
 # Store SMTP credentials in Secrets Manager
 # Note: The SMTP password is derived from the secret access key using AWS's algorithm
 # For SES SMTP, the username is the access key ID, and the password is derived from the secret
 resource "aws_secretsmanager_secret" "smtp_credentials" {
-  name        = "${var.name}-smtp-credentials"
+  name        = "${var.name}-smtp-credentials-${random_id.secret_suffix.hex}"
   description = "SMTP credentials for ${var.name}"
   tags        = var.tags
 }

@@ -1,21 +1,24 @@
 # Application Load Balancer Module
 #
 # Creates an ALB with HTTPS listener and configurable target groups.
+# Supports both internet-facing and internal ALBs.
 
 locals {
   name_prefix = "${var.project}-${var.environment}"
+  name_suffix = var.name_suffix != "" ? "-${var.name_suffix}" : ""
+  full_name   = "${local.name_prefix}${local.name_suffix}"
 }
 
 resource "aws_security_group" "alb" {
-  name        = "${local.name_prefix}-alb-sg"
-  description = "Security group for Application Load Balancer"
+  name        = "${local.full_name}-alb-sg"
+  description = "Security group for ${var.internal ? "internal" : "internet-facing"} ALB"
   vpc_id      = var.vpc_id
 
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.allowed_cidr_blocks
     description = "Allow HTTP traffic"
   }
 
@@ -23,7 +26,7 @@ resource "aws_security_group" "alb" {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.allowed_cidr_blocks
     description = "Allow HTTPS traffic"
   }
 
@@ -36,21 +39,21 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-alb-sg"
+    Name = "${local.full_name}-alb-sg"
   }
 }
 
 resource "aws_lb" "main" {
-  name               = "${local.name_prefix}-alb"
-  internal           = false
+  name               = "${local.full_name}-alb"
+  internal           = var.internal
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = var.public_subnet_ids
+  subnets            = var.subnet_ids
 
   enable_deletion_protection = var.enable_deletion_protection
 
   tags = {
-    Name = "${local.name_prefix}-alb"
+    Name = "${local.full_name}-alb"
   }
 }
 

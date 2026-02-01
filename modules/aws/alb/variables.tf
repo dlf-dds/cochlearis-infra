@@ -13,9 +13,27 @@ variable "vpc_id" {
   type        = string
 }
 
-variable "public_subnet_ids" {
-  description = "List of public subnet IDs for the ALB"
+variable "subnet_ids" {
+  description = "List of subnet IDs for the ALB (public for internet-facing, private for internal)"
   type        = list(string)
+}
+
+variable "internal" {
+  description = "Whether the ALB is internal (true) or internet-facing (false)"
+  type        = bool
+  default     = false
+}
+
+variable "name_suffix" {
+  description = "Optional suffix to add to resource names (e.g., 'internal')"
+  type        = string
+  default     = ""
+}
+
+variable "allowed_cidr_blocks" {
+  description = "CIDR blocks allowed to access the ALB (default: 0.0.0.0/0 for internet-facing)"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "certificate_arn" {
