@@ -71,84 +71,88 @@ All services authenticate through Zitadel SSO — one login for everything.
 ### Architecture
 
 ```
-                                    ┌─────────────────────────────────────────────────────────────┐
-                                    │                        Internet                              │
-                                    └─────────────────────────────────────────────────────────────┘
-                                                              │
-                                                              ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                           Public Subnets                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐   │
-│  │                              Application Load Balancer (ALB)                                         │   │
-│  │                                    TLS termination (443)                                             │   │
-│  │                                                                                                      │   │
-│  │    auth.*.almondbread.org    docs.*.almondbread.org    mm.*.almondbread.org    chat.*.almondbread.org│   │
-│  └─────────────────────────────────────────────────────────────────────────────────────────────────────┘   │
-│                                                     │                                                        │
-│                              ┌──────────────────────┼──────────────────────┐                                │
-│                              │                      │                      │                                │
-│                              ▼                      ▼                      ▼                                │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-                               │                      │                      │
-┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                           Private Subnets                                                    │
-│                                                                                                              │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────────────────────┐  │
-│  │   Zitadel    │    │  BookStack   │    │  Mattermost  │    │                 Zulip                    │  │
-│  │   :8080      │    │    :80       │    │    :8065     │    │   ┌─────────┐    ┌─────────────────┐    │  │
-│  │              │    │              │    │              │    │   │  Zulip  │    │ PostgreSQL      │    │  │
-│  │              │    │              │    │              │    │   │  :80    │───▶│ Sidecar :5432   │    │  │
-│  └──────────────┘    └──────────────┘    └──────────────┘    │   └─────────┘    └─────────────────┘    │  │
-│         │                   │                   │            │                          │               │  │
-│         │                   │                   │            └──────────────────────────│───────────────┘  │
-│         │                   │                   │                                       │                   │
-│         ▼                   ▼                   ▼                                       ▼                   │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                       ┌──────────────┐           │
-│  │  RDS         │    │  RDS         │    │  RDS         │                       │  EFS         │           │
-│  │  PostgreSQL  │    │  MySQL       │    │  PostgreSQL  │                       │  (persists   │           │
-│  │              │    │              │    │              │                       │   PG data)   │           │
-│  └──────────────┘    └──────────────┘    └──────────────┘                       └──────────────┘           │
-│                                                                                                              │
-│                                          ┌──────────────┐                                                   │
-│                                          │ ElastiCache  │◀──────── Zulip Redis                              │
-│                                          │ Redis        │                                                   │
-│                                          └──────────────┘                                                   │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-
-                                           OIDC Authentication Flow
-                                           ========================
-
-    ┌──────────┐         ┌───────────────┐         ┌─────────────────────────────────────────────────┐
-    │  User    │         │     ALB       │         │              Private Subnet                      │
-    │ Browser  │         │               │         │                                                  │
-    └────┬─────┘         └───────┬───────┘         │  ┌─────────┐   ┌─────────┐   ┌─────────┐       │
-         │                       │                 │  │BookStack│   │Mattermost│  │  Zulip  │       │
-         │  1. GET /login        │                 │  └────┬────┘   └────┬────┘   └────┬────┘       │
-         │──────────────────────▶│                 │       │             │             │            │
-         │                       │────────────────▶│       │             │             │            │
-         │                       │                 │       │             │             │            │
-         │  2. Redirect to       │                 │       │◀────────────┼─────────────┼────────────│
-         │     Zitadel /authorize│◀────────────────│       │             │             │            │
-         │◀──────────────────────│                 │       │             │             │            │
-         │                       │                 │       │     ┌───────┴───────┐     │            │
-         │  3. GET /authorize    │                 │       │     │    Zitadel    │     │            │
-         │──────────────────────▶│────────────────▶│       │     │    :8080      │     │            │
-         │                       │                 │       │     └───────┬───────┘     │            │
-         │  4. Login form        │                 │       │             │             │            │
-         │◀──────────────────────│◀────────────────│       │             │             │            │
-         │                       │                 │       │  5. Token   │             │            │
-         │  6. Redirect with     │                 │       │   exchange  │             │            │
-         │     auth code         │                 │       │◀────────────┤             │            │
-         │◀──────────────────────│                 │       │─────────────▶             │            │
-         │                       │                 │       │             │             │            │
-         │  7. Token exchange    │                 │       │  Internal OIDC calls go   │            │
-         │     (via app)         │                 │       │  through ALB (not direct) │            │
-         │──────────────────────▶│────────────────▶│───────┼─────────────▶             │            │
-         │                       │                 │                                                │
-         │  8. Authenticated!    │                 └────────────────────────────────────────────────┘
-         │◀──────────────────────│
-         │                       │
+                              INTERNET
+                                 |
+                                 v
++========================================================================+
+|                          PUBLIC SUBNETS                                 |
+|                                                                         |
+|    +---------------------------------------------------------------+   |
+|    |              Application Load Balancer (ALB)                  |   |
+|    |                   TLS termination (:443)                      |   |
+|    |                                                               |   |
+|    |   auth.*          docs.*          mm.*          chat.*        |   |
+|    +---------------------------------------------------------------+   |
+|             |              |              |              |              |
++========================================================================+
+              |              |              |              |
+              v              v              v              v
++========================================================================+
+|                         PRIVATE SUBNETS                                 |
+|                                                                         |
+|   +-----------+   +-----------+   +-----------+   +------------------+ |
+|   |  Zitadel  |   | BookStack |   | Mattermost|   |      Zulip       | |
+|   |   :8080   |   |    :80    |   |   :8065   |   |  +------+------+ | |
+|   |           |   |           |   |           |   |  | Zulip|Postgr| | |
+|   |           |   |           |   |           |   |  | :80  | :5432| | |
+|   +-----------+   +-----------+   +-----------+   |  +------+------+ | |
+|         |               |               |         +------------------+ |
+|         |               |               |                   |          |
+|         v               v               v                   v          |
+|   +-----------+   +-----------+   +-----------+       +-----------+   |
+|   |    RDS    |   |    RDS    |   |    RDS    |       |    EFS    |   |
+|   | PostgreSQL|   |   MySQL   |   | PostgreSQL|       | (PG data) |   |
+|   +-----------+   +-----------+   +-----------+       +-----------+   |
+|                                                                         |
+|                         +-----------+                                   |
+|                         |ElastiCache| <-- Zulip Redis                   |
+|                         |   Redis   |                                   |
+|                         +-----------+                                   |
++========================================================================+
 ```
+
+**Zulip Sidecar Pattern:** Zulip runs PostgreSQL as a sidecar container within the same ECS task,
+persisting data to EFS. This avoids the RDS limitation of one major version upgrade at a time.
+
+**OIDC Authentication Flow:**
+
+```
+  Browser                    ALB                    App               Zitadel
+     |                        |                      |                    |
+     |  1. GET /login         |                      |                    |
+     |----------------------->|--------------------->|                    |
+     |                        |                      |                    |
+     |  2. Redirect to auth.*/authorize              |                    |
+     |<-----------------------|<---------------------|                    |
+     |                        |                      |                    |
+     |  3. GET /authorize     |                      |                    |
+     |----------------------->|------------------------------------------>|
+     |                        |                      |                    |
+     |  4. Login form         |                      |                    |
+     |<-----------------------|<------------------------------------------|
+     |                        |                      |                    |
+     |  5. POST credentials   |                      |                    |
+     |----------------------->|------------------------------------------>|
+     |                        |                      |                    |
+     |  6. Redirect with auth code to callback       |                    |
+     |<-----------------------|<------------------------------------------|
+     |                        |                      |                    |
+     |  7. GET /callback?code=...                    |                    |
+     |----------------------->|--------------------->|                    |
+     |                        |                      |                    |
+     |                        |  8. Token exchange   |  (via ALB, not     |
+     |                        |                      |   direct)          |
+     |                        |                      |------------------->|
+     |                        |                      |<-------------------|
+     |                        |                      |                    |
+     |  9. Authenticated!     |                      |                    |
+     |<-----------------------|<---------------------|                    |
+     |                        |                      |                    |
+```
+
+**Important:** Internal OIDC token exchange (step 8) routes through the ALB because apps
+resolve Zitadel by its public DNS name (auth.*.almondbread.org). Direct container-to-container
+communication isn't possible without custom DNS.
 
 > **Complexity Note:** This architecture required more effort than anticipated. Each service (BookStack, Mattermost, Zulip) has different OIDC configuration requirements, and internal service-to-Zitadel communication must route through the ALB because services resolve Zitadel by its public DNS name. A Kubernetes deployment with internal service discovery (e.g., `zitadel.auth.svc.cluster.local`) would simplify this significantly. If self-hosting at scale, consider EKS or managed Kubernetes over ECS.
 
