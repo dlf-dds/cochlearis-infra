@@ -1,0 +1,298 @@
+# Local development environment for cochlearis services
+# Mirrors the ECS Fargate deployment for local testing
+
+services:
+  # ==========================================================================
+  # Reverse Proxy (simulates ALB with host-based routing)
+  # ==========================================================================
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=local_cochlearis"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--log.level=DEBUG"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - cochlearis
+
+  # ==========================================================================
+  # Zitadel - Identity Provider
+  # ==========================================================================
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:latest
+    command: start-from-init --masterkeyFromEnv --tlsMode disabled
+    environment:
+      - ZITADEL_DATABASE_POSTGRES_HOST=zitadel-db
+      - ZITADEL_DATABASE_POSTGRES_PORT=5432
+      - ZITADEL_DATABASE_POSTGRES_DATABASE=zitadel
+      - ZITADEL_DATABASE_POSTGRES_USER_USERNAME=zitadel
+      - ZITADEL_DATABASE_POSTGRES_USER_PASSWORD=zitadel-password
+      - ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE=disable
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME=zitadel
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD=zitadel-password
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE=disable
+      - ZITADEL_EXTERNALSECURE=false
+      - ZITADEL_EXTERNALDOMAIN=auth.localhost
+      - ZITADEL_EXTERNALPORT=80
+      - ZITADEL_MASTERKEY=MasterkeyNeedsToHave32Characters
+      - ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME=admin
+      - ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD=Password1!
+      # Disable Login V2 (requires separate app in v4+). Use classic Login V1 bundled with Zitadel.
+      - ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED=false
+    depends_on:
+      zitadel-db:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.zitadel.rule=Host(`auth.localhost`)"
+      - "traefik.http.routers.zitadel.entrypoints=web"
+      - "traefik.http.services.zitadel.loadbalancer.server.port=8080"
+    networks:
+      - cochlearis
+  zitadel-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=zitadel
+      - POSTGRES_PASSWORD=zitadel-password
+      - POSTGRES_DB=zitadel
+    volumes:
+      - zitadel-db-data:/var/lib/postgresql/data
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zitadel -d zitadel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Zulip - Chat Service
+  # ==========================================================================
+  # NOTE: Zulip Docker image is x86-only. On ARM Macs, x86 emulation causes
+  # database connection timeouts. Use --profile zulip on x86 machines only.
+  zulip:
+    image: zulip/docker-zulip:latest
+    restart: unless-stopped
+    profiles:
+      - zulip  # Only start with: docker compose --profile zulip up
+    environment:
+      - SETTING_EXTERNAL_HOST=chat.localhost
+      - SETTING_ZULIP_ADMINISTRATOR=admin@localhost
+      - DISABLE_HTTPS=True
+      - SSL_CERTIFICATE_GENERATION=self-signed
+      - LOADBALANCER_IPS=172.16.0.0/12
+      # Extended timeout for x86 emulation on ARM Macs
+      - DB_HOST_WAIT_TIMEOUT=120
+      # Database
+      - SETTING_DATABASES__default__HOST=zulip-db
+      - SETTING_DATABASES__default__NAME=zulip
+      - SETTING_DATABASES__default__USER=zulip
+      - SECRETS_postgres_password=zulip-password
+      # Redis
+      - SETTING_REDIS_HOST=zulip-redis
+      - SETTING_REDIS_PORT=6379
+      # Secrets
+      - SECRETS_secret_key=your-secret-key-at-least-50-characters-long-for-security
+      # Local storage (no S3)
+      - SETTING_LOCAL_UPLOADS_DIR=/data/uploads
+      # Disable email for local testing
+      - SETTING_EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+    depends_on:
+      zulip-db:
+        condition: service_healthy
+      zulip-redis:
+        condition: service_healthy
+    volumes:
+      - zulip-data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.zulip.rule=Host(`chat.localhost`)"
+      - "traefik.http.routers.zulip.entrypoints=web"
+      - "traefik.http.services.zulip.loadbalancer.server.port=80"
+    networks:
+      - cochlearis
+
+  zulip-db:
+    image: postgres:14-alpine
+    profiles:
+      - zulip
+    environment:
+      - POSTGRES_USER=zulip
+      - POSTGRES_PASSWORD=zulip-password
+      - POSTGRES_DB=zulip
+    volumes:
+      - zulip-db-data:/var/lib/postgresql/data
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zulip -d zulip"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  zulip-redis:
+    image: redis:7-alpine
+    profiles:
+      - zulip
+    volumes:
+      - zulip-redis-data:/data
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Mattermost - Team Chat (ARM64 compatible, replaces Zulip for local dev)
+  # ==========================================================================
+  mattermost:
+    image: mattermost/mattermost-team-edition:latest
+    restart: unless-stopped
+    environment:
+      # Database
+      - MM_SQLSETTINGS_DRIVERNAME=postgres
+      - MM_SQLSETTINGS_DATASOURCE=postgres://mattermost:mattermost-password@mattermost-db:5432/mattermost?sslmode=disable&connect_timeout=10
+      # Site settings
+      - MM_SERVICESETTINGS_SITEURL=http://chat.localhost
+      - MM_SERVICESETTINGS_LISTENADDRESS=:8065
+      # Disable telemetry for local dev
+      - MM_LOGSETTINGS_ENABLEDIAGNOSTICS=false
+      # Allow signup
+      - MM_TEAMSETTINGS_ENABLEOPENSERVER=true
+      - MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS=false
+      - MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION=false
+    depends_on:
+      mattermost-db:
+        condition: service_healthy
+    volumes:
+      - mattermost-data:/mattermost/data
+      - mattermost-logs:/mattermost/logs
+      - mattermost-config:/mattermost/config
+      - mattermost-plugins:/mattermost/plugins
+      - mattermost-client-plugins:/mattermost/client/plugins
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mattermost.rule=Host(`chat.localhost`)"
+      - "traefik.http.routers.mattermost.entrypoints=web"
+      - "traefik.http.services.mattermost.loadbalancer.server.port=8065"
+    networks:
+      - cochlearis
+
+  mattermost-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=mattermost
+      - POSTGRES_PASSWORD=mattermost-password
+      - POSTGRES_DB=mattermost
+    volumes:
+      - mattermost-db-data:/var/lib/postgresql/data
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mattermost -d mattermost"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # BookStack - Documentation
+  # ==========================================================================
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - APP_URL=http://docs.localhost
+      - DB_HOST=bookstack-db
+      - DB_PORT=3306
+      - DB_DATABASE=bookstack
+      - DB_USER=bookstack
+      - DB_PASS=bookstack-password
+      - APP_KEY=base64:gQkyyhikZQAd8R5zhIxEQwSvUyedo+IswhxSyH/scRw=
+      # OIDC configuration (points to local Zitadel)
+      - AUTH_METHOD=oidc
+      - OIDC_NAME=Zitadel
+      - OIDC_DISPLAY_NAME_CLAIMS=name
+      - OIDC_CLIENT_ID=bookstack-local
+      - OIDC_CLIENT_SECRET=bookstack-secret
+      - OIDC_ISSUER=http://auth.localhost
+      - OIDC_ISSUER_DISCOVER=true
+    depends_on:
+      bookstack-db:
+        condition: service_healthy
+    volumes:
+      - bookstack-data:/config
+      - ./bookstack.env:/config/www/.env:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bookstack.rule=Host(`docs.localhost`)"
+      - "traefik.http.routers.bookstack.entrypoints=web"
+      - "traefik.http.services.bookstack.loadbalancer.server.port=80"
+    networks:
+      - cochlearis
+
+  bookstack-db:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=root-password
+      - MYSQL_DATABASE=bookstack
+      - MYSQL_USER=bookstack
+      - MYSQL_PASSWORD=bookstack-password
+    volumes:
+      - bookstack-db-data:/var/lib/mysql
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot-password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ==========================================================================
+  # Docusaurus - Static Documentation Site
+  # ==========================================================================
+  docusaurus:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm start -- --host 0.0.0.0 --port 3000"
+    volumes:
+      - ./docusaurus-site:/app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.docusaurus.rule=Host(`site.localhost`)"
+      - "traefik.http.routers.docusaurus.entrypoints=web"
+      - "traefik.http.services.docusaurus.loadbalancer.server.port=3000"
+    networks:
+      - cochlearis
+    profiles:
+      - docusaurus  # Only start with --profile docusaurus
+
+networks:
+  cochlearis:
+    driver: bridge
+
+volumes:
+  zitadel-db-data:
+  mattermost-data:
+  mattermost-logs:
+  mattermost-config:
+  mattermost-plugins:
+  mattermost-client-plugins:
+  mattermost-db-data:
+  zulip-data:
+  zulip-db-data:
+  zulip-redis-data:
+  bookstack-data:
+  bookstack-db-data:

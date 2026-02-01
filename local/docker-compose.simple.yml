@@ -1,0 +1,183 @@
+# Simplified local development environment
+# No Traefik - services exposed directly on different ports
+#
+# Usage: docker compose -f docker-compose.simple.yml up -d
+#
+# Services:
+#   Zitadel:   http://localhost:8080
+#   Zulip:     http://localhost:8081
+#   BookStack: http://localhost:8082
+
+services:
+  # ==========================================================================
+  # Zitadel - Identity Provider
+  # ==========================================================================
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:latest
+    command: start-from-init --masterkeyFromEnv --tlsMode disabled
+    ports:
+      - "8080:8080"
+    environment:
+      - ZITADEL_DATABASE_POSTGRES_HOST=zitadel-db
+      - ZITADEL_DATABASE_POSTGRES_PORT=5432
+      - ZITADEL_DATABASE_POSTGRES_DATABASE=zitadel
+      - ZITADEL_DATABASE_POSTGRES_USER_USERNAME=zitadel
+      - ZITADEL_DATABASE_POSTGRES_USER_PASSWORD=zitadel-password
+      - ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE=disable
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME=zitadel
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD=zitadel-password
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE=disable
+      - ZITADEL_EXTERNALSECURE=false
+      - ZITADEL_EXTERNALDOMAIN=localhost
+      - ZITADEL_EXTERNALPORT=8080
+      - ZITADEL_MASTERKEY=MasterkeyNeedsToHave32Characters
+      - ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME=admin
+      - ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD=Password1!
+    depends_on:
+      zitadel-db:
+        condition: service_healthy
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/debug/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  zitadel-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=zitadel
+      - POSTGRES_PASSWORD=zitadel-password
+      - POSTGRES_DB=zitadel
+    volumes:
+      - zitadel-db-data:/var/lib/postgresql/data
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zitadel -d zitadel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Zulip - Chat Service
+  # ==========================================================================
+  zulip:
+    image: zulip/docker-zulip:latest
+    platform: linux/amd64
+    ports:
+      - "8081:80"
+    environment:
+      - SETTING_EXTERNAL_HOST=localhost:8081
+      - SETTING_ZULIP_ADMINISTRATOR=admin@local.test
+      - DISABLE_HTTPS=True
+      - SSL_CERTIFICATE_GENERATION=self-signed
+      # Database
+      - SETTING_DATABASES__default__HOST=zulip-db
+      - SETTING_DATABASES__default__NAME=zulip
+      - SETTING_DATABASES__default__USER=zulip
+      - SECRETS_postgres_password=zulip-password
+      # Redis
+      - SETTING_REDIS_HOST=zulip-redis
+      - SETTING_REDIS_PORT=6379
+      # Secrets
+      - SECRETS_secret_key=your-secret-key-at-least-50-characters-long-for-security
+      # Local storage
+      - SETTING_LOCAL_UPLOADS_DIR=/data/uploads
+      # Disable email for local testing
+      - SETTING_EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+    depends_on:
+      zulip-db:
+        condition: service_healthy
+      zulip-redis:
+        condition: service_healthy
+    volumes:
+      - zulip-data:/data
+    networks:
+      - cochlearis
+
+  zulip-db:
+    image: postgres:14-alpine
+    environment:
+      - POSTGRES_USER=zulip
+      - POSTGRES_PASSWORD=zulip-password
+      - POSTGRES_DB=zulip
+    volumes:
+      - zulip-db-data:/var/lib/postgresql/data
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zulip -d zulip"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  zulip-redis:
+    image: redis:7-alpine
+    volumes:
+      - zulip-redis-data:/data
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # BookStack - Documentation
+  # ==========================================================================
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:latest
+    ports:
+      - "8082:80"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - APP_URL=http://localhost:8082
+      - DB_HOST=bookstack-db
+      - DB_PORT=3306
+      - DB_DATABASE=bookstack
+      - DB_USER=bookstack
+      - DB_PASS=bookstack-password
+      # Disable OIDC for simplified testing (use local auth)
+      - AUTH_METHOD=standard
+    depends_on:
+      bookstack-db:
+        condition: service_healthy
+    volumes:
+      - bookstack-data:/config
+    networks:
+      - cochlearis
+
+  bookstack-db:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=root-password
+      - MYSQL_DATABASE=bookstack
+      - MYSQL_USER=bookstack
+      - MYSQL_PASSWORD=bookstack-password
+    volumes:
+      - bookstack-db-data:/var/lib/mysql
+    networks:
+      - cochlearis
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot-password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  cochlearis:
+    driver: bridge
+
+volumes:
+  zitadel-db-data:
+  zulip-data:
+  zulip-db-data:
+  zulip-redis-data:
+  bookstack-data:
+  bookstack-db-data:
