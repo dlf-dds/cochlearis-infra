@@ -32,26 +32,59 @@ output "alb_dns_name" {
 # Zitadel
 output "zitadel_url" {
   description = "URL for Zitadel identity provider"
-  value       = "https://${local.zitadel_domain}"
+  value       = module.zitadel.url
 }
 
 output "zitadel_db_endpoint" {
   description = "Endpoint for Zitadel PostgreSQL database"
-  value       = module.zitadel_db.endpoint
+  value       = module.zitadel.db_endpoint
 }
 
 # Zulip
 output "zulip_url" {
   description = "URL for Zulip chat"
-  value       = "https://${local.zulip_domain}"
+  value       = module.zulip.url
 }
 
 output "zulip_db_endpoint" {
   description = "Endpoint for Zulip PostgreSQL database"
-  value       = module.zulip_db.endpoint
+  value       = module.zulip.db_endpoint
 }
 
 output "zulip_redis_endpoint" {
   description = "Endpoint for Zulip Redis cache"
-  value       = module.zulip_redis.endpoint
+  value       = module.zulip.redis_endpoint
+}
+
+# BookStack
+output "bookstack_url" {
+  description = "URL for BookStack documentation"
+  value       = module.bookstack.url
+}
+
+output "bookstack_db_endpoint" {
+  description = "Endpoint for BookStack MySQL database"
+  value       = module.bookstack.db_endpoint
+}
+
+# Mattermost
+output "mattermost_url" {
+  description = "URL for Mattermost chat"
+  value       = module.mattermost.url
+}
+
+output "mattermost_db_endpoint" {
+  description = "Endpoint for Mattermost PostgreSQL database"
+  value       = module.mattermost.db_endpoint
+}
+
+# Governance
+output "governance_sns_topic_arn" {
+  description = "ARN of the governance alerts SNS topic"
+  value       = module.governance.sns_topic_arn
+}
+
+output "governance_lambda_function_name" {
+  description = "Name of the lifecycle manager Lambda"
+  value       = module.governance.lambda_function_name
 }

@@ -1,0 +1,39 @@
+# Dev Environment Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# =============================================================================
+# Required Variables (no defaults)
+# =============================================================================
+
+# Route53 hosted zone ID for your domain
+# Find this in AWS Console > Route53 > Hosted zones
+route53_zone_id = "Z0XXXXXXXXXXXXXXXXXX"
+
+# =============================================================================
+# Optional Variables (have defaults, override as needed)
+# =============================================================================
+
+# Project name - used for resource naming and tagging
+# project = "cochlearis"
+
+# Environment name
+# environment = "dev"
+
+# AWS region for all resources
+# region = "eu-central-1"
+
+# Root domain name for services (creates subdomains like auth.dev.example.com)
+# domain_name = "example.com"
+
+# Email for infrastructure alerts and governance notifications
+# owner_email = "your-email@example.com"
+
+# Monthly budget limit in USD (alerts at 50%, 80%, 100%, 120%)
+# monthly_budget_limit = 200
+
+# Auto-terminate resources that exceed their lifecycle (temporary resources)
+# enable_auto_termination = true
+
+# Enable Zitadel OIDC for SSO across services
+# Set to true AFTER running the bootstrap script: scripts/bootstrap-zitadel.sh
+# enable_zitadel_oidc = false
