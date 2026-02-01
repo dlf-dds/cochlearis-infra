@@ -1,0 +1,49 @@
+formatter: markdown table
+
+version: ">= 0.17.0"
+
+header-from: .header.md
+footer-from: ""
+
+recursive:
+  enabled: false
+
+sections:
+  hide: []
+  show: []
+
+content: |-
+  {{ .Header }}
+
+  {{ .Requirements }}
+
+  {{ .Providers }}
+
+  {{ .Resources }}
+
+  {{ .Inputs }}
+
+  {{ .Outputs }}
+
+output:
+  file: README.md
+  mode: replace
+
+sort:
+  enabled: true
+  by: required
+
+settings:
+  anchor: true
+  color: true
+  default: true
+  description: true
+  escape: true
+  hide-empty: true
+  html: true
+  indent: 2
+  lockfile: false
+  read-comments: true
+  required: true
+  sensitive: true
+  type: true
