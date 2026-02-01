@@ -1,0 +1,22 @@
+# Admin Global Environment Configuration
+# This environment manages cross-account IAM users and groups
+# Copy this file to terraform.tfvars and fill in your values
+
+# =============================================================================
+# Optional Variables (all have defaults)
+# =============================================================================
+
+# Project name - used for resource naming and tagging
+# project = "cochlearis"
+
+# Environment name
+# environment = "global"
+
+# AWS region for IAM resources (IAM is global but needs a region for API calls)
+# region = "eu-central-1"
+
+# =============================================================================
+# User Management
+# Users are defined in variables.tf locals block, not here
+# Edit variables.tf to add/remove users from admin_users or alumni_users
+# =============================================================================

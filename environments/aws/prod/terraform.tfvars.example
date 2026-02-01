@@ -1,0 +1,23 @@
+# Production Environment Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# =============================================================================
+# Required Variables (no defaults)
+# =============================================================================
+
+# Route53 hosted zone ID for your domain
+# Find this in AWS Console > Route53 > Hosted zones
+route53_zone_id = "Z0XXXXXXXXXXXXXXXXXX"
+
+# =============================================================================
+# Optional Variables (have defaults, override as needed)
+# =============================================================================
+
+# Project name - used for resource naming and tagging
+# project = "cochlearis"
+
+# Environment name
+# environment = "prod"
+
+# AWS region for all resources
+# region = "eu-central-1"
