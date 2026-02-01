@@ -61,3 +61,15 @@ variable "enable_service_discovery" {
   type        = bool
   default     = true
 }
+
+variable "alb_security_group_id" {
+  description = "Security group ID of the ALB for ingress rules"
+  type        = string
+  default     = null
+}
+
+variable "alb_ingress_ports" {
+  description = "List of ports to allow ingress from ALB to ECS tasks"
+  type        = list(number)
+  default     = [80, 8080]
+}

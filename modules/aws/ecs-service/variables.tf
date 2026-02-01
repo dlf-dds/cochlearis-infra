@@ -137,3 +137,60 @@ variable "health_check_matcher" {
   type        = string
   default     = "200-399"
 }
+
+variable "target_group_protocol_version" {
+  description = "Protocol version for the target group (HTTP1, HTTP2, or GRPC). HTTP2 required for gRPC services."
+  type        = string
+  default     = "HTTP1"
+}
+
+variable "container_command" {
+  description = "Command to run in the container (overrides image CMD)"
+  type        = list(string)
+  default     = null
+}
+
+# EFS Volume Support
+variable "efs_volumes" {
+  description = "EFS volumes to mount in the container"
+  type = list(object({
+    name            = string
+    file_system_id  = string
+    access_point_id = string
+    container_path  = string
+    read_only       = optional(bool, false)
+  }))
+  default = []
+}
+
+# Sidecar containers
+variable "sidecar_containers" {
+  description = "Additional sidecar containers to run alongside the main container"
+  type = list(object({
+    name                  = string
+    image                 = string
+    essential             = optional(bool, true)
+    port                  = optional(number)
+    user                  = optional(string) # User to run the container as (e.g., "999:999")
+    environment_variables = optional(map(string), {})
+    secrets               = optional(map(string), {})
+    command               = optional(list(string))
+    health_check = optional(object({
+      command      = list(string)
+      interval     = number
+      timeout      = number
+      retries      = number
+      start_period = number
+    }))
+    mount_points = optional(list(object({
+      volume_name    = string
+      container_path = string
+      read_only      = optional(bool, false)
+    })), [])
+    depends_on = optional(list(object({
+      container_name = string
+      condition      = string # START, COMPLETE, SUCCESS, HEALTHY
+    })), [])
+  }))
+  default = []
+}

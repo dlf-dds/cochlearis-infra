@@ -65,6 +65,19 @@ resource "aws_security_group" "ecs_tasks" {
   }
 }
 
+# Ingress rules from ALB to ECS tasks (centralized to avoid duplicate rules)
+resource "aws_security_group_rule" "alb_to_ecs" {
+  for_each = var.alb_security_group_id != null ? toset([for p in var.alb_ingress_ports : tostring(p)]) : toset([])
+
+  type                     = "ingress"
+  from_port                = tonumber(each.value)
+  to_port                  = tonumber(each.value)
+  protocol                 = "tcp"
+  source_security_group_id = var.alb_security_group_id
+  security_group_id        = aws_security_group.ecs_tasks.id
+  description              = "Allow traffic from ALB on port ${each.value}"
+}
+
 resource "aws_iam_role" "ecs_task_execution" {
   name = "${local.name_prefix}-ecs-task-execution"
 

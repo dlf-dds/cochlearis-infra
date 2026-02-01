@@ -7,21 +7,21 @@ locals {
 }
 
 resource "aws_db_subnet_group" "main" {
-  name       = "${local.name_prefix}-db-subnet-group"
+  name       = "${local.name_prefix}-${var.identifier}-db-subnet"
   subnet_ids = var.private_subnet_ids
 
   tags = {
-    Name = "${local.name_prefix}-db-subnet-group"
+    Name = "${local.name_prefix}-${var.identifier}-db-subnet"
   }
 }
 
 resource "aws_security_group" "rds" {
-  name        = "${local.name_prefix}-rds-sg"
-  description = "Security group for RDS PostgreSQL"
+  name        = "${local.name_prefix}-${var.identifier}-rds-sg"
+  description = "Security group for RDS PostgreSQL - ${var.identifier}"
   vpc_id      = var.vpc_id
 
   tags = {
-    Name = "${local.name_prefix}-rds-sg"
+    Name = "${local.name_prefix}-${var.identifier}-rds-sg"
   }
 }
 
@@ -48,9 +48,8 @@ resource "aws_security_group_rule" "rds_egress" {
 }
 
 resource "random_password" "master" {
-  length           = 32
-  special          = true
-  override_special = "!#$%&*()-_=+[]{}<>:?"
+  length  = 32
+  special = false # Avoid special chars that break database connection URLs
 }
 
 resource "aws_secretsmanager_secret" "master_password" {
@@ -76,13 +75,13 @@ resource "aws_secretsmanager_secret_version" "master_password" {
 resource "aws_db_instance" "main" {
   identifier = "${local.name_prefix}-${var.identifier}"
 
-  engine               = "postgres"
-  engine_version       = var.engine_version
-  instance_class       = var.instance_class
-  allocated_storage    = var.allocated_storage
+  engine                = "postgres"
+  engine_version        = var.engine_version
+  instance_class        = var.instance_class
+  allocated_storage     = var.allocated_storage
   max_allocated_storage = var.max_allocated_storage
-  storage_type         = var.storage_type
-  storage_encrypted    = true
+  storage_type          = var.storage_type
+  storage_encrypted     = true
 
   db_name  = var.database_name
   username = var.master_username
@@ -91,10 +90,10 @@ resource "aws_db_instance" "main" {
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  multi_az               = var.multi_az
-  publicly_accessible    = false
-  deletion_protection    = var.deletion_protection
-  skip_final_snapshot    = var.skip_final_snapshot
+  multi_az                  = var.multi_az
+  publicly_accessible       = false
+  deletion_protection       = var.deletion_protection
+  skip_final_snapshot       = var.skip_final_snapshot
   final_snapshot_identifier = var.skip_final_snapshot ? null : "${local.name_prefix}-${var.identifier}-final"
 
   backup_retention_period = var.backup_retention_period

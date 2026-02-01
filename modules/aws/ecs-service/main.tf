@@ -24,52 +24,157 @@ resource "aws_ecs_task_definition" "main" {
   execution_role_arn       = var.task_execution_role_arn
   task_role_arn            = var.task_role_arn
 
-  container_definitions = jsonencode([
-    {
-      name      = var.service_name
-      image     = var.container_image
-      essential = true
-
-      portMappings = [
+  container_definitions = jsonencode(concat(
+    # Main container
+    [
+      merge(
         {
-          containerPort = var.container_port
-          hostPort      = var.container_port
-          protocol      = "tcp"
-        }
-      ]
+          name      = var.service_name
+          image     = var.container_image
+          essential = true
 
-      environment = [
-        for key, value in var.environment_variables : {
-          name  = key
-          value = value
-        }
-      ]
+          portMappings = [
+            {
+              containerPort = var.container_port
+              hostPort      = var.container_port
+              protocol      = "tcp"
+            }
+          ]
 
-      secrets = [
-        for key, value in var.secrets : {
-          name      = key
-          valueFrom = value
-        }
-      ]
+          environment = [
+            for key, value in var.environment_variables : {
+              name  = key
+              value = value
+            }
+          ]
 
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.service.name
-          "awslogs-region"        = data.aws_region.current.name
-          "awslogs-stream-prefix" = "ecs"
+          secrets = [
+            for key, value in var.secrets : {
+              name      = key
+              valueFrom = value
+            }
+          ]
+
+          logConfiguration = {
+            logDriver = "awslogs"
+            options = {
+              "awslogs-group"         = aws_cloudwatch_log_group.service.name
+              "awslogs-region"        = data.aws_region.current.name
+              "awslogs-stream-prefix" = "ecs"
+            }
+          }
+
+          healthCheck = var.health_check != null ? {
+            command     = var.health_check.command
+            interval    = var.health_check.interval
+            timeout     = var.health_check.timeout
+            retries     = var.health_check.retries
+            startPeriod = var.health_check.start_period
+          } : null
+
+          mountPoints = [
+            for vol in var.efs_volumes : {
+              sourceVolume  = vol.name
+              containerPath = vol.container_path
+              readOnly      = vol.read_only
+            }
+          ]
+
+          # Add dependsOn if there are sidecar containers that need to start first
+          dependsOn = length(var.sidecar_containers) > 0 ? [
+            for sc in var.sidecar_containers : {
+              containerName = sc.name
+              condition     = sc.health_check != null ? "HEALTHY" : "START"
+            } if sc.essential
+          ] : null
+        },
+        var.container_command != null ? { command = var.container_command } : {}
+      )
+    ],
+    # Sidecar containers
+    [
+      for sc in var.sidecar_containers : merge(
+        {
+          name      = sc.name
+          image     = sc.image
+          essential = sc.essential
+
+          portMappings = sc.port != null ? [
+            {
+              containerPort = sc.port
+              hostPort      = sc.port
+              protocol      = "tcp"
+            }
+          ] : []
+
+          environment = [
+            for key, value in sc.environment_variables : {
+              name  = key
+              value = value
+            }
+          ]
+
+          secrets = [
+            for key, value in sc.secrets : {
+              name      = key
+              valueFrom = value
+            }
+          ]
+
+          logConfiguration = {
+            logDriver = "awslogs"
+            options = {
+              "awslogs-group"         = aws_cloudwatch_log_group.service.name
+              "awslogs-region"        = data.aws_region.current.name
+              "awslogs-stream-prefix" = "ecs-${sc.name}"
+            }
+          }
+
+          healthCheck = sc.health_check != null ? {
+            command     = sc.health_check.command
+            interval    = sc.health_check.interval
+            timeout     = sc.health_check.timeout
+            retries     = sc.health_check.retries
+            startPeriod = sc.health_check.start_period
+          } : null
+
+          mountPoints = [
+            for mp in sc.mount_points : {
+              sourceVolume  = mp.volume_name
+              containerPath = mp.container_path
+              readOnly      = mp.read_only
+            }
+          ]
+
+          dependsOn = length(sc.depends_on) > 0 ? [
+            for dep in sc.depends_on : {
+              containerName = dep.container_name
+              condition     = dep.condition
+            }
+          ] : null
+        },
+        sc.command != null ? { command = sc.command } : {},
+        sc.user != null ? { user = sc.user } : {}
+      )
+    ]
+  ))
+
+  # EFS volume definitions
+  dynamic "volume" {
+    for_each = var.efs_volumes
+    content {
+      name = volume.value.name
+
+      efs_volume_configuration {
+        file_system_id     = volume.value.file_system_id
+        transit_encryption = "ENABLED"
+        authorization_config {
+          access_point_id = volume.value.access_point_id
+          iam             = "ENABLED"
         }
       }
-
-      healthCheck = var.health_check != null ? {
-        command     = var.health_check.command
-        interval    = var.health_check.interval
-        timeout     = var.health_check.timeout
-        retries     = var.health_check.retries
-        startPeriod = var.health_check.start_period
-      } : null
     }
-  ])
+  }
 
   tags = {
     Name = "${local.name_prefix}-${var.service_name}"
@@ -79,11 +184,12 @@ resource "aws_ecs_task_definition" "main" {
 resource "aws_lb_target_group" "main" {
   count = var.create_alb_target_group ? 1 : 0
 
-  name        = "${local.name_prefix}-${var.service_name}"
-  port        = var.container_port
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
+  name             = "${local.name_prefix}-${var.service_name}"
+  port             = var.container_port
+  protocol         = "HTTP"
+  protocol_version = var.target_group_protocol_version
+  vpc_id           = var.vpc_id
+  target_type      = "ip"
 
   health_check {
     enabled             = true
@@ -129,11 +235,12 @@ resource "aws_lb_listener_rule" "main" {
 }
 
 resource "aws_ecs_service" "main" {
-  name            = var.service_name
-  cluster         = var.cluster_id
-  task_definition = aws_ecs_task_definition.main.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+  name             = var.service_name
+  cluster          = var.cluster_id
+  task_definition  = aws_ecs_task_definition.main.arn
+  desired_count    = var.desired_count
+  launch_type      = "FARGATE"
+  platform_version = length(var.efs_volumes) > 0 ? "1.4.0" : "LATEST"
 
   network_configuration {
     subnets          = var.private_subnet_ids

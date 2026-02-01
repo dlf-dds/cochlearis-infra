@@ -47,3 +47,9 @@ output "master_password_secret_name" {
   description = "The name of the Secrets Manager secret containing the master password"
   value       = aws_secretsmanager_secret.master_password.name
 }
+
+output "master_password" {
+  description = "The master password (sensitive - use for constructing connection strings)"
+  value       = random_password.master.result
+  sensitive   = true
+}
