@@ -115,3 +115,31 @@ variable "enable_docusaurus_auth" {
   type        = bool
   default     = false
 }
+
+# =============================================================================
+# Mattermost <-> Outline Bridge
+# =============================================================================
+
+variable "enable_mm_outline_bridge" {
+  description = "Enable the Mattermost <-> Outline bi-directional bridge"
+  type        = bool
+  default     = false
+}
+
+variable "outline_api_key_secret_arn" {
+  description = "ARN of Secrets Manager secret containing Outline API key (JSON with 'api_key' field). See MANUALINTEGR.md."
+  type        = string
+  default     = ""
+}
+
+variable "outline_default_collection_id" {
+  description = "Default Outline collection ID for documents created via /outline slash command"
+  type        = string
+  default     = ""
+}
+
+variable "mattermost_webhook_secret_arn" {
+  description = "ARN of Secrets Manager secret containing Mattermost incoming webhook URL (JSON with 'webhook_url' field). See MANUALINTEGR.md."
+  type        = string
+  default     = ""
+}

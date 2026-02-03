@@ -35,6 +35,13 @@ This directory contains detailed documentation for the Cochlearis infrastructure
 | [ZULIP.md](ZULIP.md) | Zulip-specific documentation (EC2 deployment, not ECS) |
 | [DOCUSAURUS_DEPLOYMENT.md](DOCUSAURUS_DEPLOYMENT.md) | Docusaurus static site deployment details |
 
+### Integrations
+
+| Document | Purpose |
+|----------|---------|
+| [../ONESHOTPLAN.md](../ONESHOTPLAN.md) | Mattermost ↔ Outline bridge architecture and implementation plan |
+| [../MANUALINTEGR.md](../MANUALINTEGR.md) | Manual setup steps for Mattermost ↔ Outline bridge |
+
 ### Development & Maintenance
 
 | Document | Purpose |
@@ -62,3 +69,5 @@ This directory contains detailed documentation for the Cochlearis infrastructure
 **"How do I manage users in BookStack/Zulip/Outline?"** → See [MANAGEMENT.md](MANAGEMENT.md)
 
 **"Why doesn't OIDC work?"** → See [OIDC.md](OIDC.md) — TL;DR: it's on hold, use Azure AD/Google OAuth instead
+
+**"How do I set up Mattermost ↔ Outline integration?"** → See [../MANUALINTEGR.md](../MANUALINTEGR.md)

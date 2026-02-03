@@ -1864,3 +1864,51 @@ email_password = your-smtp-password
 4. Restart Zulip: `su zulip -c '/home/zulip/deployments/current/scripts/restart-server'`
 
 **Note**: SES is in sandbox mode by default. Verify recipient emails or request production access (see "SES Sandbox Mode" gotcha).
+
+---
+
+## Mattermost ↔ Outline Bridge
+
+**Date**: 2026-02-03
+
+### Overview
+
+The bridge enables bi-directional integration between Mattermost (chat) and Outline (wiki):
+- **Outbound**: `/outline create "Title" "Content"` slash command creates Outline documents
+- **Inbound**: Outline webhooks notify a Mattermost channel when documents are published/updated
+
+### Architecture
+
+- **AWS Lambda**: Python 3.11 function that multiplexes requests based on Content-Type
+- **API Gateway (HTTP API v2)**: Public endpoint at `https://bridge.{env}.{domain}/bridge`
+- **Secrets Manager**: Stores Outline API key and Mattermost webhook URL
+
+### Enabling the Bridge
+
+1. Set `enable_mm_outline_bridge = true` in terraform.tfvars
+2. Follow [MANUALINTEGR.md](../MANUALINTEGR.md) to:
+   - Create Outline API key and store in Secrets Manager
+   - Create Mattermost incoming webhook and store in Secrets Manager
+   - Configure Mattermost slash command
+   - Configure Outline webhook
+3. Run `terraform apply`
+
+### Troubleshooting
+
+**Slash command returns error:**
+```bash
+aws-vault exec cochlearis --no-session -- aws logs tail \
+  /aws/lambda/cochlearis-dev-mm-outline-bridge \
+  --region eu-central-1 --follow
+```
+
+**Common issues:**
+- Missing API key secret → Check `OUTLINE_API_KEY_SECRET_ARN` in Lambda config
+- Invalid collection ID → Verify collection exists in Outline
+- Webhook not delivering → Check Outline webhook status page
+
+### Reference
+
+- Implementation: `modules/aws/integrations/bridge/`
+- Manual setup: [MANUALINTEGR.md](../MANUALINTEGR.md)
+- Architecture: [ONESHOTPLAN.md](../ONESHOTPLAN.md)

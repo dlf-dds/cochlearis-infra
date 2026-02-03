@@ -601,3 +601,30 @@ module "governance" {
     Component = "governance"
   }
 }
+
+# =============================================================================
+# Mattermost <-> Outline Bridge
+# Bi-directional integration: slash commands and webhooks
+# =============================================================================
+
+module "bridge" {
+  count  = var.enable_mm_outline_bridge ? 1 : 0
+  source = "../../../modules/aws/integrations/bridge"
+
+  project         = var.project
+  environment     = var.environment
+  domain_name     = var.domain_name
+  route53_zone_id = module.vpc.route53_zone_id
+
+  # Outline configuration
+  outline_api_key_secret_arn = var.outline_api_key_secret_arn
+  outline_collection_id      = var.outline_default_collection_id
+  outline_base_url           = "https://wiki.${var.environment}.${var.domain_name}"
+
+  # Mattermost configuration
+  mattermost_webhook_secret_arn = var.mattermost_webhook_secret_arn
+
+  tags = {
+    Component = "integrations"
+  }
+}
