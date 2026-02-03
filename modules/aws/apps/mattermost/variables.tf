@@ -182,3 +182,35 @@ variable "oidc_client_secret_arn" {
   type        = string
   default     = ""
 }
+
+# Azure AD (Office 365) OAuth configuration
+variable "azure_tenant_id" {
+  description = "Azure AD tenant ID (use 'common' for multi-tenant)"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_id" {
+  description = "Azure AD application (client) ID"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Azure AD credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Email configuration (SES)
+variable "region" {
+  description = "AWS region for SES endpoint"
+  type        = string
+  default     = "eu-central-1"
+}
+
+variable "smtp_from_email" {
+  description = "Email address to send from (must be verified in SES). Set to enable email notifications."
+  type        = string
+  default     = ""
+}

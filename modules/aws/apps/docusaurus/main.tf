@@ -73,4 +73,8 @@ module "service" {
   listener_rule_priority  = var.listener_rule_priority
   health_check_path       = "/"
   health_check_matcher    = "200"
+
+  # ALB OIDC Authentication (optional - protects site with Azure AD or Google OAuth)
+  enable_alb_oidc_auth = var.enable_alb_oidc_auth
+  alb_oidc_config      = var.alb_oidc_config
 }

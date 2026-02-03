@@ -715,7 +715,7 @@ Before marking infrastructure complete:
 
 ## Related Documentation
 
-- [README.md](README.md) - Quick start and overview
+- [README.md](../README.md) - Quick start and overview
 - [EXCELLENCE.md](EXCELLENCE.md) - Principles and philosophy behind this repository
 - [PHOENIX.md](PHOENIX.md) - Gap analysis for destroy/rebuild capability
 - [GOTCHAS.md](GOTCHAS.md) - Troubleshooting and lessons learned

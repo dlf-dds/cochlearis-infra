@@ -27,7 +27,7 @@ module "ecs" {
 
   # ALB ingress rules (centralized to avoid duplicate rules from app modules)
   alb_security_group_id = module.alb.security_group_id
-  alb_ingress_ports     = [80, 3000, 8065, 8080] # 80 for Zulip/BookStack/Docusaurus, 3000 for Outline, 8065 for Mattermost, 8080 for Zitadel
+  alb_ingress_ports     = [80, 3000, 8065, 8080] # 80 for BookStack/Docusaurus, 3000 for Outline, 8065 for Mattermost, 8080 for Zitadel
 
   # Internal ALB ingress rules (for service-to-service communication)
   internal_alb_security_group_id = module.alb_internal.security_group_id
@@ -69,6 +69,29 @@ module "alb_internal" {
   internal            = true
   name_suffix         = "internal"
   allowed_cidr_blocks = ["10.0.0.0/16"] # VPC CIDR only
+}
+
+# =============================================================================
+# ECR Repositories for Container Images
+# =============================================================================
+# Mirrors Docker Hub images to avoid rate limits (429 Too Many Requests).
+# After applying, run: ./scripts/sync-images-to-ecr.sh
+
+module "ecr" {
+  source = "../../../modules/aws/ecr"
+
+  # Zulip ECR repos removed - using standard installation on EC2, not docker-zulip
+  repositories = {
+    "bookstack"  = { source = "linuxserver/bookstack:latest" }
+    "mattermost" = { source = "mattermost/mattermost-team-edition:latest" }
+    "outline"    = { source = "outlinewiki/outline:latest" }
+    "zitadel"    = { source = "ghcr.io/zitadel/zitadel:latest" }
+  }
+
+  tags = {
+    Project     = var.project
+    Environment = var.environment
+  }
 }
 
 # =============================================================================
@@ -202,35 +225,124 @@ module "zitadel" {
 
   # Register with internal ALB for service-to-service OIDC discovery
   additional_target_group_arns = [aws_lb_target_group.zitadel_internal.arn]
+
+  # Use ECR image to avoid Docker Hub rate limits
+  container_image = "${module.ecr.repository_urls["zitadel"]}:latest"
 }
 
 # =============================================================================
-# Zitadel OIDC Applications (enabled after bootstrap script creates service account)
+# Zitadel OIDC Configuration (ABANDONED - see OIDC.md)
 # =============================================================================
+# OIDC via self-hosted Zitadel was attempted for 48 hours but never worked.
+# Kept for future reference. Use Google OAuth instead (see terraform.tfvars).
+#
+# If retrying: OIDC apps are created in dev/oidc/ Terraform root to avoid
+# chicken-and-egg with the zitadel provider. That root writes config to SSM.
 
-# Read organization ID from SSM (created by bootstrap script)
-data "aws_ssm_parameter" "zitadel_org_id" {
+data "aws_ssm_parameter" "oidc_issuer" {
   count = var.enable_zitadel_oidc ? 1 : 0
-  name  = "/${var.project}/${var.environment}/zitadel/organization-id"
+  name  = "/${var.project}/${var.environment}/oidc/issuer-url"
 }
 
-module "zitadel_oidc" {
-  source = "../../../modules/aws/zitadel-oidc"
-  count  = var.enable_zitadel_oidc ? 1 : 0
-
-  organization_id    = data.aws_ssm_parameter.zitadel_org_id[0].value
-  project_name       = "Cochlearis"
-  secret_prefix      = "${var.project}-${var.environment}"
-  bookstack_domain   = "docs.${var.environment}.${var.domain_name}"
-  zulip_domain       = "chat.${var.environment}.${var.domain_name}"
-  mattermost_domain  = "mm.${var.environment}.${var.domain_name}"
-  outline_domain     = "wiki.${var.environment}.${var.domain_name}"
-
-  depends_on = [module.zitadel]
+data "aws_ssm_parameter" "bookstack_oidc_client_id" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/bookstack/client-id"
 }
 
-module "zulip" {
-  source = "../../../modules/aws/apps/zulip"
+data "aws_ssm_parameter" "bookstack_oidc_secret_arn" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/bookstack/secret-arn"
+}
+
+data "aws_ssm_parameter" "mattermost_oidc_client_id" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/mattermost/client-id"
+}
+
+data "aws_ssm_parameter" "mattermost_oidc_secret_arn" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/mattermost/secret-arn"
+}
+
+data "aws_ssm_parameter" "zulip_oidc_client_id" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/zulip/client-id"
+}
+
+data "aws_ssm_parameter" "zulip_oidc_secret_arn" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/zulip/secret-arn"
+}
+
+data "aws_ssm_parameter" "outline_oidc_client_id" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/outline/client-id"
+}
+
+data "aws_ssm_parameter" "outline_oidc_secret_arn" {
+  count = var.enable_zitadel_oidc ? 1 : 0
+  name  = "/${var.project}/${var.environment}/oidc/outline/secret-arn"
+}
+
+# =============================================================================
+# ALB OIDC Authentication (for Docusaurus)
+# =============================================================================
+# Fetch OAuth client secrets from Secrets Manager for ALB-level authentication.
+# Azure AD takes priority if configured, otherwise Google OAuth is used.
+
+data "aws_secretsmanager_secret_version" "azure_oauth" {
+  count     = var.enable_azure_oauth && var.enable_docusaurus_auth ? 1 : 0
+  secret_id = var.azure_client_secret_arn
+}
+
+data "aws_secretsmanager_secret_version" "google_oauth" {
+  count     = var.enable_google_oauth && !var.enable_azure_oauth && var.enable_docusaurus_auth ? 1 : 0
+  secret_id = var.google_oauth_secret_arn
+}
+
+locals {
+  # Determine which OAuth provider to use for ALB OIDC (Azure AD takes priority)
+  use_azure_oidc  = var.enable_azure_oauth && var.enable_docusaurus_auth
+  use_google_oidc = var.enable_google_oauth && !var.enable_azure_oauth && var.enable_docusaurus_auth
+
+  # Azure AD OIDC endpoints
+  azure_oidc_config = local.use_azure_oidc ? {
+    authorization_endpoint = "https://login.microsoftonline.com/${var.azure_tenant_id}/oauth2/v2.0/authorize"
+    client_id              = var.azure_client_id
+    client_secret          = jsondecode(data.aws_secretsmanager_secret_version.azure_oauth[0].secret_string)["client_secret"]
+    issuer                 = "https://login.microsoftonline.com/${var.azure_tenant_id}/v2.0"
+    token_endpoint         = "https://login.microsoftonline.com/${var.azure_tenant_id}/oauth2/v2.0/token"
+    user_info_endpoint     = "https://graph.microsoft.com/oidc/userinfo"
+    scope                  = "openid email profile"
+    session_timeout        = 604800 # 7 days
+  } : null
+
+  # Google OIDC endpoints
+  google_oidc_config = local.use_google_oidc ? {
+    authorization_endpoint = "https://accounts.google.com/o/oauth2/v2/auth"
+    client_id              = var.google_oauth_client_id
+    client_secret          = jsondecode(data.aws_secretsmanager_secret_version.google_oauth[0].secret_string)["client_secret"]
+    issuer                 = "https://accounts.google.com"
+    token_endpoint         = "https://oauth2.googleapis.com/token"
+    user_info_endpoint     = "https://openidconnect.googleapis.com/v1/userinfo"
+    scope                  = "openid email profile"
+    session_timeout        = 604800 # 7 days
+  } : null
+
+  # Use whichever OIDC config is active
+  docusaurus_oidc_config = local.use_azure_oidc ? local.azure_oidc_config : local.google_oidc_config
+}
+
+# =============================================================================
+# Zulip EC2 - VM-based deployment (ECS Fargate not suitable)
+# =============================================================================
+# See gotchas.md "Zulip Cannot Run Self-Contained in ECS Fargate" for details.
+# Using EC2 with standard Zulip installation instead of docker-zulip.
+#
+# URL: https://chat.dev.almondbread.org
+
+module "zulip_ec2" {
+  source = "../../../modules/aws/apps/zulip-ec2"
 
   project         = var.project
   environment     = var.environment
@@ -239,9 +351,9 @@ module "zulip" {
   route53_zone_id = var.route53_zone_id
 
   # Network
-  vpc_id             = module.vpc.vpc_id
-  vpc_cidr           = "10.0.0.0/16"
-  private_subnet_ids = module.vpc.private_subnet_ids
+  vpc_id            = module.vpc.vpc_id
+  private_subnet_id = module.vpc.private_subnet_ids[0]
+  public_subnet_id  = module.vpc.public_subnet_ids[0]
 
   # ALB
   alb_dns_name          = module.alb.alb_dns_name
@@ -249,24 +361,22 @@ module "zulip" {
   alb_listener_arn      = module.alb.https_listener_arn
   alb_security_group_id = module.alb.security_group_id
 
-  # ECS
-  ecs_cluster_id              = module.ecs.cluster_id
-  ecs_tasks_security_group_id = module.ecs.tasks_security_group_id
-  task_execution_role_arn     = module.ecs.task_execution_role_arn
-  task_execution_role_name    = module.ecs.task_execution_role_name
-  task_role_arn               = module.ecs.task_role_arn
-  task_role_name              = module.ecs.task_role_name
+  # Configuration
+  instance_type = "t3.medium" # 2 vCPU, 4GB RAM - sufficient for ~100 users
+  admin_email   = var.owner_email
 
-  # Dev-specific configuration (PostgreSQL runs as sidecar, higher resources needed)
-  redis_node_type = "cache.t3.micro"
-  ecs_cpu         = 2048 # Zulip + PostgreSQL sidecar
-  ecs_memory      = 4096 # Zulip + PostgreSQL sidecar
-  admin_email     = var.owner_email
+  # Azure AD OAuth
+  azure_tenant_id         = var.enable_azure_oauth ? var.azure_tenant_id : ""
+  azure_client_id         = var.enable_azure_oauth ? var.azure_client_id : ""
+  azure_client_secret_arn = var.enable_azure_oauth ? var.azure_client_secret_arn : ""
 
-  # OIDC configuration (enabled after running bootstrap script)
-  oidc_issuer            = var.enable_zitadel_oidc ? module.zitadel.url : ""
-  oidc_client_id         = var.enable_zitadel_oidc ? module.zitadel_oidc[0].zulip_client_id : ""
-  oidc_client_secret_arn = var.enable_zitadel_oidc ? module.zitadel_oidc[0].zulip_oidc_secret_arn : ""
+  # Google OAuth
+  google_client_id         = var.enable_google_oauth ? var.google_oauth_client_id : ""
+  google_client_secret_arn = var.enable_google_oauth ? var.google_oauth_secret_arn : ""
+
+  # Email configuration (SES)
+  smtp_from_email = "chat@${var.domain_name}"
+  smtp_from_name  = "Zulip"
 }
 
 module "bookstack" {
@@ -296,18 +406,34 @@ module "bookstack" {
   task_role_arn               = module.ecs.task_role_arn
   task_role_name              = module.ecs.task_role_name
 
-  # Dev-specific configuration
-  db_instance_class      = "db.t3.micro"
-  db_multi_az            = false
+  # Configuration sized for ~100 concurrent users (production-ready HA)
+  db_instance_class      = "db.t3.small" # 2GB RAM, non-burstable under load
+  db_multi_az            = true          # HA: automatic failover
   db_deletion_protection = false
   db_skip_final_snapshot = true
-  ecs_cpu                = 512
-  ecs_memory             = 1024
+  ecs_cpu                = 1024          # ~1 vCPU
+  ecs_memory             = 2048          # 2GB RAM
+  desired_count          = 2             # HA: multiple instances
 
-  # OIDC configuration (enabled after running bootstrap script)
-  oidc_issuer            = var.enable_zitadel_oidc ? module.zitadel.url : ""
-  oidc_client_id         = var.enable_zitadel_oidc ? module.zitadel_oidc[0].bookstack_client_id : ""
-  oidc_client_secret_arn = var.enable_zitadel_oidc ? module.zitadel_oidc[0].bookstack_oidc_secret_arn : ""
+  # Azure AD OAuth (takes priority if configured)
+  azure_tenant_id         = var.enable_azure_oauth ? var.azure_tenant_id : ""
+  azure_client_id         = var.enable_azure_oauth ? var.azure_client_id : ""
+  azure_client_secret_arn = var.enable_azure_oauth ? var.azure_client_secret_arn : ""
+
+  # Google OAuth (used if Azure AD not configured)
+  google_client_id         = var.enable_google_oauth ? var.google_oauth_client_id : ""
+  google_client_secret_arn = var.enable_google_oauth ? var.google_oauth_secret_arn : ""
+
+  # OIDC configuration (ABANDONED - kept for future reference)
+  oidc_issuer            = var.enable_zitadel_oidc ? data.aws_ssm_parameter.oidc_issuer[0].value : ""
+  oidc_client_id         = var.enable_zitadel_oidc ? data.aws_ssm_parameter.bookstack_oidc_client_id[0].value : ""
+  oidc_client_secret_arn = var.enable_zitadel_oidc ? data.aws_ssm_parameter.bookstack_oidc_secret_arn[0].value : ""
+
+  # Use ECR image to avoid Docker Hub rate limits
+  container_image = "${module.ecr.repository_urls["bookstack"]}:latest"
+
+  # Email notifications (SES)
+  smtp_from_email = "docs@${var.domain_name}"
 }
 
 module "mattermost" {
@@ -338,21 +464,34 @@ module "mattermost" {
   task_execution_role_name    = module.ecs.task_execution_role_name
   task_role_arn               = module.ecs.task_role_arn
 
-  # Dev-specific configuration
-  db_instance_class      = "db.t3.micro"
-  db_multi_az            = false
+  # Configuration sized for ~100 concurrent users (production-ready HA)
+  db_instance_class      = "db.t3.small" # 2GB RAM, non-burstable under load
+  db_multi_az            = true          # HA: automatic failover
   db_deletion_protection = false
   db_skip_final_snapshot = true
-  ecs_cpu                = 512
-  ecs_memory             = 1024
+  ecs_cpu                = 1024          # ~1 vCPU
+  ecs_memory             = 2048          # 2GB RAM
+  desired_count          = 2             # HA: multiple instances
 
   # Allow open signup for dev
   enable_open_server = true
 
-  # OIDC configuration (enabled after running bootstrap script)
-  oidc_issuer            = var.enable_zitadel_oidc ? module.zitadel.url : ""
-  oidc_client_id         = var.enable_zitadel_oidc ? module.zitadel_oidc[0].mattermost_client_id : ""
-  oidc_client_secret_arn = var.enable_zitadel_oidc ? module.zitadel_oidc[0].mattermost_oidc_secret_arn : ""
+  # Azure AD (Office 365) OAuth
+  azure_tenant_id         = var.enable_azure_oauth ? var.azure_tenant_id : ""
+  azure_client_id         = var.enable_azure_oauth ? var.azure_client_id : ""
+  azure_client_secret_arn = var.enable_azure_oauth ? var.azure_client_secret_arn : ""
+
+  # OIDC configuration (reads from SSM - created by dev/oidc/)
+  oidc_issuer            = var.enable_zitadel_oidc ? data.aws_ssm_parameter.oidc_issuer[0].value : ""
+  oidc_client_id         = var.enable_zitadel_oidc ? data.aws_ssm_parameter.mattermost_oidc_client_id[0].value : ""
+  oidc_client_secret_arn = var.enable_zitadel_oidc ? data.aws_ssm_parameter.mattermost_oidc_secret_arn[0].value : ""
+
+  # Email configuration (SES)
+  region          = var.region
+  smtp_from_email = "mm@${var.domain_name}"
+
+  # Use ECR image to avoid Docker Hub rate limits
+  container_image = "${module.ecr.repository_urls["mattermost"]}:latest"
 }
 
 module "docusaurus" {
@@ -382,6 +521,10 @@ module "docusaurus" {
   # Dev-specific configuration
   ecs_cpu    = 256
   ecs_memory = 512
+
+  # ALB OIDC Authentication (uses Azure AD if configured, else Google OAuth)
+  enable_alb_oidc_auth = var.enable_docusaurus_auth
+  alb_oidc_config      = local.docusaurus_oidc_config
 }
 
 module "outline" {
@@ -411,19 +554,31 @@ module "outline" {
   task_role_arn               = module.ecs.task_role_arn
   task_role_name              = module.ecs.task_role_name
 
-  # Dev-specific configuration
-  db_instance_class      = "db.t3.micro"
-  db_multi_az            = false
+  # Configuration sized for ~100 concurrent users (production-ready HA)
+  db_instance_class      = "db.t3.small"   # 2GB RAM, non-burstable under load
+  db_multi_az            = true            # HA: automatic failover
   db_deletion_protection = false
   db_skip_final_snapshot = true
-  redis_node_type        = "cache.t3.micro"
-  ecs_cpu                = 512
-  ecs_memory             = 1024
+  redis_node_type        = "cache.t3.small" # 1.5GB RAM for sessions/cache
+  ecs_cpu                = 1024             # ~1 vCPU
+  ecs_memory             = 2048             # 2GB RAM
+  desired_count          = 2               # HA: multiple instances
 
-  # OIDC configuration (enabled after running bootstrap script)
-  oidc_issuer            = var.enable_zitadel_oidc ? module.zitadel.url : ""
-  oidc_client_id         = var.enable_zitadel_oidc ? module.zitadel_oidc[0].outline_client_id : ""
-  oidc_client_secret_arn = var.enable_zitadel_oidc ? module.zitadel_oidc[0].outline_oidc_secret_arn : ""
+  # Slack OAuth - works with ANY Slack workspace (free/personal)
+  # This is the recommended auth method for personal accounts.
+  # Create a Slack app at https://api.slack.com/apps and store credentials in Secrets Manager.
+  slack_client_id         = var.outline_slack_client_id
+  slack_client_secret_arn = var.outline_slack_secret_arn
+
+  # SMTP for email notifications (NOT for authentication - Outline requires OAuth)
+  enable_email_auth = true
+  smtp_from_email   = "wiki@${var.domain_name}"
+
+  # Note: Google/Azure OAuth require organizational accounts (not personal Gmail/Microsoft).
+  # See gotchas.md "Outline Requires OAuth Provider"
+
+  # Use ECR image to avoid Docker Hub rate limits
+  container_image = "${module.ecr.repository_urls["outline"]}:latest"
 }
 
 # =============================================================================

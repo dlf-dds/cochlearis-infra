@@ -3,10 +3,12 @@
 # Self-hosted Zulip with SSO support
 
 locals {
-  name_prefix  = "${var.project}-${var.environment}"
-  domain       = "chat.${var.environment}.${var.domain_name}"
-  oidc_enabled = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
-  oidc_issuer  = var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"
+  name_prefix    = "${var.project}-${var.environment}"
+  domain         = "chat.${var.environment}.${var.domain_name}"
+  oidc_enabled   = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
+  oidc_issuer    = var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"
+  google_enabled = var.google_client_id != "" && var.google_client_secret_arn != ""
+  azure_enabled  = var.azure_client_id != "" && var.azure_client_secret_arn != "" && var.azure_tenant_id != ""
 }
 
 # SSL Certificate
@@ -229,9 +231,12 @@ resource "aws_iam_role_policy" "secrets_access" {
         Resource = concat(
           [
             aws_secretsmanager_secret.secrets.arn,
-            aws_secretsmanager_secret.postgres.arn
+            aws_secretsmanager_secret.postgres.arn,
+            module.ses_user.smtp_credentials_secret_arn
           ],
-          local.oidc_enabled ? [var.oidc_client_secret_arn] : []
+          local.oidc_enabled ? [var.oidc_client_secret_arn] : [],
+          local.google_enabled ? [var.google_client_secret_arn] : [],
+          local.azure_enabled ? [var.azure_client_secret_arn] : []
         )
       }
     ]
@@ -318,9 +323,8 @@ module "service" {
       SETTING_S3_AUTH_UPLOADS_BUCKET = aws_s3_bucket.uploads.id
       SETTING_S3_REGION              = var.region
 
-      # Email (SES)
+      # Email (SES) - username and password come from secrets
       SETTING_EMAIL_HOST            = "email-smtp.${var.region}.amazonaws.com"
-      SETTING_EMAIL_HOST_USER       = module.ses_user.name
       SETTING_EMAIL_PORT            = "587"
       SETTING_EMAIL_USE_TLS         = "True"
       SETTING_NOREPLY_EMAIL_ADDRESS = "noreply@${var.domain_name}"
@@ -328,26 +332,41 @@ module "service" {
       # Allow organization creation without a link (dev environment)
       SETTING_OPEN_REALM_CREATION = "True"
     },
-    # Authentication - OIDC via Zitadel (if configured) or standard
-    local.oidc_enabled ? {
-      # OIDC backend enabled
-      SETTING_AUTHENTICATION_BACKENDS = "(\"zproject.backends.GenericOpenIdConnectBackend\",)"
-      # SOCIAL_AUTH_OIDC_ENABLED_IDPS is a Python dict - must be valid Python syntax
-      SETTING_SOCIAL_AUTH_OIDC_ENABLED_IDPS = "{\"zitadel\": {\"oidc_url\": \"${local.oidc_issuer}\", \"display_name\": \"Zitadel\", \"client_id\": \"${var.oidc_client_id}\", \"auto_signup\": True}}"
-      SETTING_SOCIAL_AUTH_OIDC_FULL_NAME_VALIDATED = "True"
+    # Authentication backends - supports multiple SSO providers simultaneously
+    # Priority: Both Azure AD + Google if configured, then single provider, then email/password
+    local.azure_enabled && local.google_enabled ? {
+      # Both Azure AD and Google OAuth enabled
+      SETTING_AUTHENTICATION_BACKENDS        = "(\"zproject.backends.AzureADAuthBackend\", \"zproject.backends.GoogleAuthBackend\", \"zproject.backends.EmailAuthBackend\")"
+      SETTING_SOCIAL_AUTH_AZUREAD_OAUTH2_KEY = var.azure_client_id
+      SETTING_SOCIAL_AUTH_GOOGLE_OAUTH2_KEY  = var.google_client_id
+    } : local.azure_enabled ? {
+      # Azure AD OAuth only
+      SETTING_AUTHENTICATION_BACKENDS        = "(\"zproject.backends.AzureADAuthBackend\", \"zproject.backends.EmailAuthBackend\")"
+      SETTING_SOCIAL_AUTH_AZUREAD_OAUTH2_KEY = var.azure_client_id
+    } : local.google_enabled ? {
+      # Google OAuth only
+      SETTING_AUTHENTICATION_BACKENDS       = "(\"zproject.backends.GoogleAuthBackend\", \"zproject.backends.EmailAuthBackend\")"
+      SETTING_SOCIAL_AUTH_GOOGLE_OAUTH2_KEY = var.google_client_id
     } : {
-      # Standard email/password auth when OIDC not configured
+      # Standard email/password auth
       SETTING_AUTHENTICATION_BACKENDS = "(\"zproject.backends.EmailAuthBackend\",)"
     }
   )
 
   secrets = merge(
     {
-      SECRETS_postgres_password = "${aws_secretsmanager_secret.postgres.arn}:password::"
-      SECRETS_secret_key        = "${aws_secretsmanager_secret.secrets.arn}:secret_key::"
+      SECRETS_postgres_password   = "${aws_secretsmanager_secret.postgres.arn}:password::"
+      SECRETS_secret_key          = "${aws_secretsmanager_secret.secrets.arn}:secret_key::"
+      SECRETS_email_host_user     = "${module.ses_user.smtp_credentials_secret_arn}:username::"
+      SECRETS_email_host_password = "${module.ses_user.smtp_credentials_secret_arn}:password::"
     },
-    local.oidc_enabled ? {
-      SECRETS_social_auth_oidc_secret = "${var.oidc_client_secret_arn}:client_secret::"
+    # Azure AD secret (when enabled)
+    local.azure_enabled ? {
+      SECRETS_social_auth_azuread_oauth2_secret = "${var.azure_client_secret_arn}:client_secret::"
+    } : {},
+    # Google secret (when enabled - independent of Azure AD)
+    local.google_enabled ? {
+      SECRETS_social_auth_google_oauth2_secret = "${var.google_client_secret_arn}:client_secret::"
     } : {}
   )
 
@@ -384,7 +403,7 @@ module "service" {
   sidecar_containers = [
     {
       name      = "postgres"
-      image     = "zulip/zulip-postgresql:14"
+      image     = var.postgres_image
       essential = true
       port      = 5432
       user      = "999:999" # Run as postgres user to avoid chown issues with EFS

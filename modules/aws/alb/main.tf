@@ -41,6 +41,12 @@ resource "aws_security_group" "alb" {
   tags = {
     Name = "${local.full_name}-alb-sg"
   }
+
+  # Prevent description changes from forcing replacement
+  # Security group descriptions are immutable in AWS
+  lifecycle {
+    ignore_changes = [description]
+  }
 }
 
 resource "aws_lb" "main" {

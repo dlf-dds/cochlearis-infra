@@ -3,10 +3,25 @@
 # Self-hosted Mattermost for team communication
 
 locals {
-  name_prefix  = "${var.project}-${var.environment}"
-  domain       = "${var.subdomain}.${var.environment}.${var.domain_name}"
-  oidc_enabled = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
-  oidc_issuer  = var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"
+  name_prefix   = "${var.project}-${var.environment}"
+  domain        = "${var.subdomain}.${var.environment}.${var.domain_name}"
+  oidc_enabled  = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
+  oidc_issuer   = var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"
+  azure_enabled = var.azure_client_id != "" && var.azure_client_secret_arn != "" && var.azure_tenant_id != ""
+  smtp_enabled  = var.smtp_from_email != ""
+}
+
+# SES SMTP user for sending emails
+module "ses_user" {
+  count  = local.smtp_enabled ? 1 : 0
+  source = "../../ses-smtp-user"
+
+  name = "${local.name_prefix}-mattermost-ses"
+  tags = {
+    Name        = "${local.name_prefix}-mattermost-ses"
+    Environment = var.environment
+    Service     = "mattermost"
+  }
 }
 
 # SSL Certificate (only created if not provided externally)
@@ -98,7 +113,9 @@ resource "aws_iam_role_policy" "secrets_access" {
         ]
         Resource = concat(
           [aws_secretsmanager_secret.database_url.arn],
-          local.oidc_enabled ? [var.oidc_client_secret_arn] : []
+          local.oidc_enabled ? [var.oidc_client_secret_arn] : [],
+          local.azure_enabled ? [var.azure_client_secret_arn] : [],
+          local.smtp_enabled ? [module.ses_user[0].smtp_credentials_secret_arn] : []
         )
       }
     ]
@@ -137,6 +154,11 @@ module "service" {
       # Site settings
       MM_SERVICESETTINGS_SITEURL       = "https://${local.domain}"
       MM_SERVICESETTINGS_LISTENADDRESS = ":8065"
+      MM_SERVICESETTINGS_WEBSOCKETURL  = "wss://${local.domain}/api/v4/websocket"
+
+      # Reverse proxy settings (ALB terminates TLS, forwards HTTP to container)
+      MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER    = "X-Forwarded-For"
+      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS = ""
 
       # Disable telemetry
       MM_LOGSETTINGS_ENABLEDIAGNOSTICS = "false"
@@ -144,13 +166,36 @@ module "service" {
       # Team settings
       MM_TEAMSETTINGS_ENABLEOPENSERVER = var.enable_open_server ? "true" : "false"
 
-      # Email settings (disabled by default, enable with SMTP)
-      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS   = "false"
+      # Email settings
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS   = local.smtp_enabled ? "true" : "false"
       MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION = "false"
     },
-    # OpenID Connect SSO via Zitadel (Team Edition uses GitLab-style OAuth adapter)
-    # Note: Team Edition requires "read_user" scope, NOT standard OIDC scopes
-    local.oidc_enabled ? {
+    # SMTP settings (SES)
+    local.smtp_enabled ? {
+      MM_EMAILSETTINGS_SMTPSERVER                    = "email-smtp.${var.region}.amazonaws.com"
+      MM_EMAILSETTINGS_SMTPPORT                      = "587"
+      MM_EMAILSETTINGS_ENABLESMTPAUTH                = "true"
+      MM_EMAILSETTINGS_CONNECTIONSECURITY            = "STARTTLS"
+      MM_EMAILSETTINGS_FEEDBACKEMAIL                 = var.smtp_from_email
+      MM_EMAILSETTINGS_REPLYTOADDRESS                = var.smtp_from_email
+      MM_EMAILSETTINGS_FEEDBACKNAME                  = "Mattermost"
+      MM_EMAILSETTINGS_FEEDBACKORGANIZATION          = var.project
+      MM_SUPPORTSETTINGS_SUPPORTEMAIL                = var.smtp_from_email
+      MM_EMAILSETTINGS_SKIPSERVERCERTIFICATEVERIFICATION = "false"
+    } : {},
+    # Authentication: Azure AD (Office 365) > OIDC (abandoned) > Email/password
+    local.azure_enabled ? {
+      # Office 365 / Azure AD OAuth - available in Team Edition
+      MM_OFFICE365SETTINGS_ENABLE          = "true"
+      MM_OFFICE365SETTINGS_ID              = var.azure_client_id
+      MM_OFFICE365SETTINGS_SCOPE           = "User.Read"
+      MM_OFFICE365SETTINGS_AUTHENDPOINT    = "https://login.microsoftonline.com/${var.azure_tenant_id}/oauth2/v2.0/authorize"
+      MM_OFFICE365SETTINGS_TOKENENDPOINT   = "https://login.microsoftonline.com/${var.azure_tenant_id}/oauth2/v2.0/token"
+      MM_OFFICE365SETTINGS_USERAPIENDPOINT = "https://graph.microsoft.com/v1.0/me"
+      MM_OFFICE365SETTINGS_DIRECTORYTID    = var.azure_tenant_id
+    } : local.oidc_enabled ? {
+      # OpenID Connect SSO via Zitadel (Team Edition uses GitLab-style OAuth adapter)
+      # Note: Team Edition requires "read_user" scope, NOT standard OIDC scopes
       MM_GITLABSETTINGS_ENABLE          = "true"
       MM_GITLABSETTINGS_ID              = var.oidc_client_id
       MM_GITLABSETTINGS_SCOPE           = "read_user"
@@ -165,8 +210,15 @@ module "service" {
       # Database connection string (full DSN with password)
       MM_SQLSETTINGS_DATASOURCE = "${aws_secretsmanager_secret.database_url.arn}:dsn::"
     },
-    local.oidc_enabled ? {
+    local.azure_enabled ? {
+      MM_OFFICE365SETTINGS_SECRET = "${var.azure_client_secret_arn}:client_secret::"
+    } : {},
+    local.oidc_enabled && !local.azure_enabled ? {
       MM_GITLABSETTINGS_SECRET = "${var.oidc_client_secret_arn}:client_secret::"
+    } : {},
+    local.smtp_enabled ? {
+      MM_EMAILSETTINGS_SMTPUSERNAME = "${module.ses_user[0].smtp_credentials_secret_arn}:username::"
+      MM_EMAILSETTINGS_SMTPPASSWORD = "${module.ses_user[0].smtp_credentials_secret_arn}:password::"
     } : {}
   )
 

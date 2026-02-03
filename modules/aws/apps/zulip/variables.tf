@@ -126,6 +126,12 @@ variable "container_image" {
   default     = "zulip/docker-zulip:latest"
 }
 
+variable "postgres_image" {
+  description = "Docker image for PostgreSQL sidecar"
+  type        = string
+  default     = "zulip/zulip-postgresql:14"
+}
+
 variable "admin_email" {
   description = "Administrator email address"
   type        = string
@@ -137,7 +143,7 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
-# OIDC configuration (for SSO via Zitadel)
+# OIDC configuration (for SSO via Zitadel) - ABANDONED, see OIDC.md
 variable "oidc_issuer" {
   description = "OIDC issuer URL (e.g., https://auth.dev.example.com)"
   type        = string
@@ -152,6 +158,38 @@ variable "oidc_client_id" {
 
 variable "oidc_client_secret_arn" {
   description = "ARN of the Secrets Manager secret containing OIDC client credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Google OAuth configuration (preferred SSO method)
+variable "google_client_id" {
+  description = "Google OAuth client ID"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Google OAuth credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Azure AD OAuth configuration
+variable "azure_tenant_id" {
+  description = "Azure AD tenant ID"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_id" {
+  description = "Azure AD application (client) ID"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Azure AD credentials (JSON with 'client_secret' key)"
   type        = string
   default     = ""
 }

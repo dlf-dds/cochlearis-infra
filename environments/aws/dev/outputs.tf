@@ -40,20 +40,20 @@ output "zitadel_db_endpoint" {
   value       = module.zitadel.db_endpoint
 }
 
-# Zulip
+# Zulip (EC2)
 output "zulip_url" {
   description = "URL for Zulip chat"
-  value       = module.zulip.url
+  value       = module.zulip_ec2.url
 }
 
-output "zulip_db_endpoint" {
-  description = "Endpoint for Zulip PostgreSQL database"
-  value       = module.zulip.db_endpoint
+output "zulip_instance_id" {
+  description = "EC2 instance ID for Zulip"
+  value       = module.zulip_ec2.instance_id
 }
 
-output "zulip_redis_endpoint" {
-  description = "Endpoint for Zulip Redis cache"
-  value       = module.zulip.redis_endpoint
+output "zulip_secrets_arn" {
+  description = "ARN of Secrets Manager secret containing Zulip credentials"
+  value       = module.zulip_ec2.secrets_arn
 }
 
 # BookStack

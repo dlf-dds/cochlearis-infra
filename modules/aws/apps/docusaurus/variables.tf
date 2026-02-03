@@ -100,3 +100,25 @@ variable "listener_rule_priority" {
   type        = number
   default     = 400
 }
+
+# ALB OIDC Authentication
+variable "enable_alb_oidc_auth" {
+  description = "Enable ALB-level OIDC authentication (protects Docusaurus with Azure AD or Google OAuth)"
+  type        = bool
+  default     = false
+}
+
+variable "alb_oidc_config" {
+  description = "OIDC configuration for ALB authentication"
+  type = object({
+    authorization_endpoint = string
+    client_id              = string
+    client_secret          = string
+    issuer                 = string
+    token_endpoint         = string
+    user_info_endpoint     = string
+    scope                  = optional(string, "openid email profile")
+    session_timeout        = optional(number, 604800)
+  })
+  default = null
+}

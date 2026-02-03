@@ -3,9 +3,12 @@
 # Self-hosted BookStack wiki with SSO support
 
 locals {
-  name_prefix  = "${var.project}-${var.environment}"
-  domain       = "docs.${var.environment}.${var.domain_name}"
-  oidc_enabled = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
+  name_prefix    = "${var.project}-${var.environment}"
+  domain         = "docs.${var.environment}.${var.domain_name}"
+  oidc_enabled   = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
+  google_enabled = var.google_client_id != "" && var.google_client_secret_arn != ""
+  azure_enabled  = var.azure_client_id != "" && var.azure_client_secret_arn != "" && var.azure_tenant_id != ""
+  smtp_enabled   = var.smtp_from_email != ""
 }
 
 # SSL Certificate
@@ -56,6 +59,17 @@ module "database" {
   multi_az            = var.db_multi_az
   deletion_protection = var.db_deletion_protection
   skip_final_snapshot = var.db_skip_final_snapshot
+}
+
+# SES SMTP user for email notifications
+module "ses_user" {
+  count  = local.smtp_enabled ? 1 : 0
+  source = "../../ses-smtp-user"
+
+  name = "${local.name_prefix}-bookstack-ses"
+  tags = {
+    Name = "${local.name_prefix}-bookstack-ses"
+  }
 }
 
 # Application key secret
@@ -157,7 +171,10 @@ resource "aws_iam_role_policy" "secrets_access" {
             aws_secretsmanager_secret.app_key.arn,
             module.database.master_password_secret_arn
           ],
-          local.oidc_enabled ? [var.oidc_client_secret_arn] : []
+          local.oidc_enabled ? [var.oidc_client_secret_arn] : [],
+          local.google_enabled ? [var.google_client_secret_arn] : [],
+          local.azure_enabled ? [var.azure_client_secret_arn] : [],
+          local.smtp_enabled ? [module.ses_user[0].smtp_credentials_secret_arn] : []
         )
       }
     ]
@@ -213,29 +230,31 @@ module "service" {
       # File storage
       STORAGE_TYPE = "local"
 
-      # Mail settings (SES)
-      MAIL_DRIVER     = "smtp"
-      MAIL_HOST       = "email-smtp.${var.region}.amazonaws.com"
+      # Mail settings (SES) - only enable if smtp_from_email is set
+      MAIL_DRIVER     = local.smtp_enabled ? "smtp" : "log"
+      MAIL_HOST       = local.smtp_enabled ? module.ses_user[0].smtp_endpoint : ""
       MAIL_PORT       = "587"
-      MAIL_FROM       = "docs@${var.domain_name}"
+      MAIL_FROM       = var.smtp_from_email != "" ? var.smtp_from_email : "noreply@${var.domain_name}"
       MAIL_FROM_NAME  = "BookStack"
       MAIL_ENCRYPTION = "tls"
     },
-    # OIDC SSO via Zitadel (only if configured)
-    local.oidc_enabled ? {
-      AUTH_METHOD              = "oidc"
-      OIDC_NAME                = "Zitadel"
-      OIDC_DISPLAY_NAME_CLAIMS = "name"
-      OIDC_CLIENT_ID           = var.oidc_client_id
-      OIDC_ISSUER              = var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"
-      OIDC_ISSUER_DISCOVER     = "true"
-      OIDC_USER_TO_GROUPS      = "true"
-      OIDC_GROUPS_CLAIM        = "groups"
-      OIDC_REMOVE_FROM_GROUPS  = "true"
-    } : {
-      # Standard auth when OIDC not configured
-      AUTH_METHOD = "standard"
-    }
+    # Authentication - BookStack supports multiple social providers simultaneously
+    {
+      AUTH_METHOD = "standard" # BookStack uses standard + social providers
+    },
+    # Azure AD OAuth (when enabled)
+    local.azure_enabled ? {
+      AZURE_APP_ID        = var.azure_client_id
+      AZURE_TENANT        = var.azure_tenant_id
+      AZURE_AUTO_REGISTER = "true" # Auto-create accounts for Azure AD users
+      AZURE_AUTO_CONFIRM  = "true" # Skip email confirmation for Azure AD users
+    } : {},
+    # Google OAuth (when enabled - independent of Azure AD)
+    local.google_enabled ? {
+      GOOGLE_APP_ID        = var.google_client_id
+      GOOGLE_AUTO_REGISTER = "true" # Auto-create accounts for new Google users
+      GOOGLE_AUTO_CONFIRM  = "true" # Skip email confirmation for Google users
+    } : {}
   )
 
   secrets = merge(
@@ -243,8 +262,18 @@ module "service" {
       DB_PASSWORD = "${module.database.master_password_secret_arn}:password::"
       APP_KEY     = aws_secretsmanager_secret.app_key.arn
     },
-    local.oidc_enabled ? {
-      OIDC_CLIENT_SECRET = "${var.oidc_client_secret_arn}:client_secret::"
+    # Azure AD secret (when enabled)
+    local.azure_enabled ? {
+      AZURE_APP_SECRET = "${var.azure_client_secret_arn}:client_secret::"
+    } : {},
+    # Google secret (when enabled - independent of Azure AD)
+    local.google_enabled ? {
+      GOOGLE_APP_SECRET = "${var.google_client_secret_arn}:client_secret::"
+    } : {},
+    # SMTP credentials (when enabled)
+    local.smtp_enabled ? {
+      MAIL_USERNAME = "${module.ses_user[0].smtp_credentials_secret_arn}:username::"
+      MAIL_PASSWORD = "${module.ses_user[0].smtp_credentials_secret_arn}:password::"
     } : {}
   )
 

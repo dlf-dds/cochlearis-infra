@@ -175,3 +175,77 @@ variable "oidc_client_secret_arn" {
   type        = string
   default     = ""
 }
+
+# Google OAuth configuration (preferred SSO method)
+variable "google_client_id" {
+  description = "Google OAuth client ID"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Google OAuth credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Azure AD OAuth configuration
+variable "azure_tenant_id" {
+  description = "Azure AD tenant ID"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_id" {
+  description = "Azure AD application (client) ID"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Azure AD credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Slack OAuth configuration (works with any Slack workspace including free/personal)
+variable "slack_client_id" {
+  description = "Slack OAuth client ID"
+  type        = string
+  default     = ""
+}
+
+variable "slack_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Slack OAuth credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Signup restrictions
+variable "allowed_domains" {
+  description = "Comma-separated list of allowed email domains for signup. Empty string allows all domains (including personal Gmail/Microsoft accounts)."
+  type        = string
+  default     = ""
+}
+
+# Team initialization (for database seeding)
+variable "team_name" {
+  description = "Name of the initial team to create in Outline. This solves the chicken-and-egg problem where personal accounts can't create the first team."
+  type        = string
+  default     = "Team"
+}
+
+# SMTP configuration for email notifications (NOT for authentication)
+# Note: Outline REQUIRES an OAuth provider (Slack, Google, Azure, OIDC) for login.
+# SMTP is only used for sending notification emails, not for authentication.
+variable "enable_email_auth" {
+  description = "Enable SMTP for email notifications (invites, mentions, etc). Does NOT enable email-based login."
+  type        = bool
+  default     = false
+}
+
+variable "smtp_from_email" {
+  description = "From email address for outgoing notification emails"
+  type        = string
+  default     = ""
+}

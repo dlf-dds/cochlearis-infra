@@ -3,9 +3,13 @@
 # Self-hosted Outline wiki with SSO support
 
 locals {
-  name_prefix  = "${var.project}-${var.environment}"
-  domain       = "wiki.${var.environment}.${var.domain_name}"
-  oidc_enabled = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
+  name_prefix        = "${var.project}-${var.environment}"
+  domain             = "wiki.${var.environment}.${var.domain_name}"
+  oidc_enabled       = var.oidc_client_id != "" && var.oidc_client_secret_arn != ""
+  google_enabled     = var.google_client_id != "" && var.google_client_secret_arn != ""
+  azure_enabled      = var.azure_client_id != "" && var.azure_client_secret_arn != "" && var.azure_tenant_id != ""
+  slack_enabled      = var.slack_client_id != "" && var.slack_client_secret_arn != ""
+  email_auth_enabled = var.enable_email_auth && var.smtp_from_email != ""
 }
 
 # SSL Certificate
@@ -74,15 +78,24 @@ module "redis" {
   node_type = var.redis_node_type
 }
 
-# Secret key for sessions
-resource "random_password" "secret_key" {
-  length  = 64
-  special = false
+# SES SMTP user for email authentication
+module "ses_user" {
+  count  = local.email_auth_enabled ? 1 : 0
+  source = "../../ses-smtp-user"
+
+  name = "${local.name_prefix}-outline-ses"
+  tags = {
+    Name = "${local.name_prefix}-outline-ses"
+  }
 }
 
-resource "random_password" "utils_secret" {
-  length  = 64
-  special = false
+# Secret key for sessions - must be hexadecimal
+resource "random_id" "secret_key" {
+  byte_length = 32 # 32 bytes = 64 hex characters
+}
+
+resource "random_id" "utils_secret" {
+  byte_length = 32 # 32 bytes = 64 hex characters
 }
 
 # Random suffix to avoid Secrets Manager name collision on recreate
@@ -102,8 +115,8 @@ resource "aws_secretsmanager_secret" "app_secrets" {
 resource "aws_secretsmanager_secret_version" "app_secrets" {
   secret_id = aws_secretsmanager_secret.app_secrets.id
   secret_string = jsonencode({
-    secret_key   = random_password.secret_key.result
-    utils_secret = random_password.utils_secret.result
+    secret_key   = random_id.secret_key.hex   # Must be hexadecimal
+    utils_secret = random_id.utils_secret.hex # Must be hexadecimal
     # Full DATABASE_URL (Outline requires complete connection string)
     database_url = "postgres://${module.database.master_username}:${urlencode(module.database.master_password)}@${module.database.address}:${module.database.port}/${module.database.database_name}?sslmode=require"
   })
@@ -190,14 +203,29 @@ resource "aws_iam_role_policy" "secrets_access" {
         ]
         Resource = concat(
           [aws_secretsmanager_secret.app_secrets.arn],
-          local.oidc_enabled ? [var.oidc_client_secret_arn] : []
+          local.oidc_enabled ? [var.oidc_client_secret_arn] : [],
+          local.google_enabled ? [var.google_client_secret_arn] : [],
+          local.azure_enabled ? [var.azure_client_secret_arn] : [],
+          local.slack_enabled ? [var.slack_client_secret_arn] : [],
+          local.email_auth_enabled ? [module.ses_user[0].smtp_credentials_secret_arn] : []
         )
       }
     ]
   })
 }
 
+# =============================================================================
 # ECS Service
+# =============================================================================
+# Authentication options (Outline REQUIRES at least one OAuth provider):
+# 1. Slack OAuth - Works with ANY Slack workspace (free/personal) - RECOMMENDED
+# 2. Google OAuth - Requires Google Workspace accounts (not personal Gmail)
+# 3. Azure AD OAuth - Requires organizational accounts (not personal Microsoft)
+# 4. OIDC - Requires self-hosted IdP (Zitadel, etc.) - on hold due to complexity
+#
+# IMPORTANT: Outline does NOT support standalone email/password login.
+# SMTP is for notifications only, not authentication.
+
 module "service" {
   source = "../../ecs-service"
 
@@ -232,8 +260,17 @@ module "service" {
       LOG_LEVEL        = "info"
       DEFAULT_LANGUAGE = "en_US"
 
+      # Allow any email domain for signup (including personal Gmail/Microsoft accounts)
+      # Without this, Outline restricts Google SSO to Workspace accounts only
+      ALLOWED_DOMAINS = var.allowed_domains
+
       # Redis
       REDIS_URL = "redis://${module.redis.endpoint}:${module.redis.port}"
+
+      # Database SSL - Node.js rejects RDS certificates by default
+      # NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate validation
+      # This is required because Amazon's RDS CA isn't in Node.js trust store
+      NODE_TLS_REJECT_UNAUTHORIZED = "0"
 
       # S3 Storage
       FILE_STORAGE              = "s3"
@@ -243,7 +280,20 @@ module "service" {
       AWS_S3_ACL                = "private"
       AWS_REGION                = var.region
     },
-    # OIDC SSO via Zitadel (only if configured)
+    # Authentication: Multiple SSO providers can be enabled simultaneously
+    # Slack OAuth (works with any Slack workspace including free/personal)
+    local.slack_enabled ? {
+      SLACK_CLIENT_ID = var.slack_client_id
+    } : {},
+    # Azure AD OAuth
+    local.azure_enabled ? {
+      AZURE_CLIENT_ID = var.azure_client_id
+    } : {},
+    # Google OAuth
+    local.google_enabled ? {
+      GOOGLE_CLIENT_ID = var.google_client_id
+    } : {},
+    # OIDC (on hold - kept for future reference)
     local.oidc_enabled ? {
       OIDC_CLIENT_ID    = var.oidc_client_id
       OIDC_AUTH_URI     = "${var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"}/oauth/v2/authorize"
@@ -252,6 +302,13 @@ module "service" {
       OIDC_LOGOUT_URI   = "${var.oidc_issuer != "" ? var.oidc_issuer : "https://auth.${var.environment}.${var.domain_name}"}/oidc/v1/end_session"
       OIDC_DISPLAY_NAME = "Zitadel"
       OIDC_SCOPES       = "openid profile email"
+    } : {},
+    # SMTP for email notifications (NOT for authentication - uses SES)
+    local.email_auth_enabled ? {
+      SMTP_HOST       = module.ses_user[0].smtp_endpoint
+      SMTP_PORT       = "587"
+      SMTP_FROM_EMAIL = var.smtp_from_email
+      SMTP_SECURE     = "true" # Use TLS
     } : {}
   )
 
@@ -261,8 +318,21 @@ module "service" {
       UTILS_SECRET = "${aws_secretsmanager_secret.app_secrets.arn}:utils_secret::"
       DATABASE_URL = "${aws_secretsmanager_secret.app_secrets.arn}:database_url::"
     },
+    local.slack_enabled ? {
+      SLACK_CLIENT_SECRET = "${var.slack_client_secret_arn}:client_secret::"
+    } : {},
+    local.azure_enabled ? {
+      AZURE_CLIENT_SECRET = "${var.azure_client_secret_arn}:client_secret::"
+    } : {},
+    local.google_enabled ? {
+      GOOGLE_CLIENT_SECRET = "${var.google_client_secret_arn}:client_secret::"
+    } : {},
     local.oidc_enabled ? {
       OIDC_CLIENT_SECRET = "${var.oidc_client_secret_arn}:client_secret::"
+    } : {},
+    local.email_auth_enabled ? {
+      SMTP_USERNAME = "${module.ses_user[0].smtp_credentials_secret_arn}:username::"
+      SMTP_PASSWORD = "${module.ses_user[0].smtp_credentials_secret_arn}:password::"
     } : {}
   )
 
@@ -273,4 +343,7 @@ module "service" {
   listener_rule_priority  = var.listener_rule_priority
   health_check_path       = "/_health"
   health_check_matcher    = "200"
+
+  # Enable ECS Exec for debugging
+  enable_execute_command = true
 }

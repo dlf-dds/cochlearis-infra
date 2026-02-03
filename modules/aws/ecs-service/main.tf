@@ -212,8 +212,9 @@ resource "aws_lb_target_group" "main" {
   }
 }
 
+# Listener rule without OIDC authentication
 resource "aws_lb_listener_rule" "main" {
-  count = var.create_alb_target_group ? 1 : 0
+  count = var.create_alb_target_group && !var.enable_alb_oidc_auth ? 1 : 0
 
   listener_arn = var.alb_listener_arn
   priority     = var.listener_rule_priority
@@ -234,6 +235,50 @@ resource "aws_lb_listener_rule" "main" {
   }
 }
 
+# Listener rule with ALB OIDC authentication (for static sites like Docusaurus)
+resource "aws_lb_listener_rule" "oidc" {
+  count = var.create_alb_target_group && var.enable_alb_oidc_auth ? 1 : 0
+
+  listener_arn = var.alb_listener_arn
+  priority     = var.listener_rule_priority
+
+  # OIDC authentication action (must be first)
+  action {
+    type = "authenticate-oidc"
+    order = 1
+
+    authenticate_oidc {
+      authorization_endpoint = var.alb_oidc_config.authorization_endpoint
+      client_id              = var.alb_oidc_config.client_id
+      client_secret          = var.alb_oidc_config.client_secret
+      issuer                 = var.alb_oidc_config.issuer
+      token_endpoint         = var.alb_oidc_config.token_endpoint
+      user_info_endpoint     = var.alb_oidc_config.user_info_endpoint
+      scope                  = var.alb_oidc_config.scope
+      session_timeout        = var.alb_oidc_config.session_timeout
+
+      on_unauthenticated_request = "authenticate"
+    }
+  }
+
+  # Forward to target group (after authentication)
+  action {
+    type             = "forward"
+    order            = 2
+    target_group_arn = aws_lb_target_group.main[0].arn
+  }
+
+  condition {
+    host_header {
+      values = [var.host_header]
+    }
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-${var.service_name}-oidc"
+  }
+}
+
 resource "aws_ecs_service" "main" {
   name             = var.service_name
   cluster          = var.cluster_id
@@ -241,6 +286,8 @@ resource "aws_ecs_service" "main" {
   desired_count    = var.desired_count
   launch_type      = "FARGATE"
   platform_version = length(var.efs_volumes) > 0 ? "1.4.0" : "LATEST"
+
+  enable_execute_command = var.enable_execute_command
 
   network_configuration {
     subnets          = var.private_subnet_ids

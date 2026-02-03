@@ -150,7 +150,7 @@ variable "container_image" {
   default     = "lscr.io/linuxserver/bookstack:latest"
 }
 
-# OIDC configuration (for SSO via Zitadel)
+# OIDC configuration (for SSO via Zitadel) - ABANDONED, see OIDC.md
 variable "oidc_issuer" {
   description = "OIDC issuer URL (e.g., https://auth.dev.example.com)"
   type        = string
@@ -165,6 +165,45 @@ variable "oidc_client_id" {
 
 variable "oidc_client_secret_arn" {
   description = "ARN of the Secrets Manager secret containing OIDC client credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Google OAuth configuration (preferred SSO method)
+variable "google_client_id" {
+  description = "Google OAuth client ID"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Google OAuth credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Azure AD OAuth configuration
+variable "azure_tenant_id" {
+  description = "Azure AD tenant ID"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_id" {
+  description = "Azure AD application (client) ID"
+  type        = string
+  default     = ""
+}
+
+variable "azure_client_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing Azure AD credentials (JSON with 'client_secret' key)"
+  type        = string
+  default     = ""
+}
+
+# Email configuration (SES)
+variable "smtp_from_email" {
+  description = "From email address for outgoing emails. Set to enable email notifications via SES."
   type        = string
   default     = ""
 }

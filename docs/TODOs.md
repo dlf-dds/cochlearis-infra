@@ -65,21 +65,16 @@
 
 ## Medium Priority
 
-### Debug BookStack OIDC Login
-- OIDC discovery works (verified via curl)
-- Login button may not appear or redirect may fail
-- Check BookStack logs for OIDC-related errors
-- Verify callback URL matches Zitadel configuration
-
-### Debug Mattermost OIDC Login
-- Uses GitLab-style OAuth adapter
-- Check if "GitLab" login button appears
-- Verify callback URL: `/signup/gitlab/complete`
-
 ### Clean Up Terraform State
 - Apply full terraform plan to sync state
 - Remove manually-added security group rules (let terraform manage)
 - Address ALB security group description change
+
+### Zitadel OIDC (On Hold)
+Zitadel OIDC integration is on hold after 48 hours of troubleshooting. If revisiting:
+- See `OIDC.md` for full history
+- Consider fresh RDS + Zitadel v3 (simpler than v4)
+- Test OIDC discovery from inside VPC, not just externally
 
 ---
 

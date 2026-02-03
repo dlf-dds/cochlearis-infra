@@ -201,3 +201,32 @@ variable "additional_target_group_arns" {
   type        = list(string)
   default     = []
 }
+
+# ALB OIDC Authentication (for protecting static sites like Docusaurus)
+variable "enable_alb_oidc_auth" {
+  description = "Enable ALB-level OIDC authentication (requires Azure AD or Google OAuth)"
+  type        = bool
+  default     = false
+}
+
+variable "alb_oidc_config" {
+  description = "OIDC configuration for ALB authentication"
+  type = object({
+    authorization_endpoint = string
+    client_id              = string
+    client_secret          = string # Client secret value (use data source to fetch from Secrets Manager)
+    issuer                 = string
+    token_endpoint         = string
+    user_info_endpoint     = string
+    scope                  = optional(string, "openid email profile")
+    session_timeout        = optional(number, 604800) # 7 days in seconds
+  })
+  default = null
+}
+
+# ECS Exec
+variable "enable_execute_command" {
+  description = "Enable ECS Exec for debugging (allows running commands in containers)"
+  type        = bool
+  default     = false
+}
