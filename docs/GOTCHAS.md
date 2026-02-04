@@ -4,6 +4,101 @@ Lessons learned from deploying services to ECS Fargate.
 
 ## AWS / Terraform
 
+### 🚨 CRITICAL: Never Commit Terraform Plan Files
+
+**Problem**: Terraform plan files (`tfplan`, `*.tfplan`, `plan.out`) contain **plaintext secrets** including AWS access keys, database passwords, and OAuth client secrets.
+
+**Why it's dangerous**: AWS scanners monitor public GitHub repos for credential patterns. If you commit a tfplan file, AWS will:
+1. Quarantine the exposed IAM users within minutes
+2. Open urgent support cases requiring immediate response
+3. Potentially suspend your account if not addressed
+
+**What happened (2026-02-03)**: A `tfplan` file was committed to this repo, exposing SES SMTP credentials for Zitadel and Mattermost. AWS quarantined the credentials within hours.
+
+**Prevention**: The `.gitignore` now includes:
+```
+tfplan
+*.tfplan
+**/tfplan
+**/*.tfplan
+plan.out
+*.plan
+```
+
+**If you accidentally commit a tfplan file**:
+1. Remove from git tracking: `git rm --cached path/to/tfplan`
+2. Scrub from history: `bfg --delete-files tfplan --no-blob-protection`
+3. Force push: `git push origin main --force`
+4. Rotate ALL credentials in the exposed plan file
+5. Respond to AWS support cases
+
+**Reference**: See `VULNS.md` for full incident details and remediation steps.
+
+### Database Deletion Protection and Terraform Destroy
+
+**Problem**: When `deletion_protection = true` on RDS databases, `terraform destroy` fails with:
+```
+Error: RDS Cluster FinalSnapshotIdentifier is required when a final snapshot is required
+```
+or
+```
+Error: error deleting RDS DB Instance: Cannot delete protected instance
+```
+
+**Why this exists**: Deletion protection prevents accidental data loss. It's intentional.
+
+**How to safely destroy infrastructure with deletion protection**:
+
+```bash
+# Step 1: Disable deletion protection via Terraform
+# Edit terraform.tfvars or main.tf:
+#   db_deletion_protection = false
+#   db_skip_final_snapshot = true
+
+# Step 2: Apply the protection change FIRST
+aws-vault exec cochlearis --no-session -- terraform apply
+
+# Step 3: Now destroy will work
+aws-vault exec cochlearis --no-session -- terraform destroy
+```
+
+**IMPORTANT**: This is a TWO-STEP process. You cannot disable deletion protection AND destroy in the same apply.
+
+**Environment recommendations**:
+| Environment | deletion_protection | skip_final_snapshot | Rationale |
+|-------------|--------------------|--------------------|-----------|
+| dev | `false` | `true` | Fast iteration, automated teardown |
+| staging | `true` | `false` | Pre-prod should mirror prod protections |
+| prod | `true` | `false` | Maximum protection against data loss |
+
+**Why dev uses `false`**: Dev environments need to support fully automated CI/CD pipelines that may spin up and tear down infrastructure. Requiring manual intervention breaks automation.
+
+### S3 IAM Policy Scoping
+
+**Problem**: The `modules/aws/s3-user` module grants overly broad permissions:
+```hcl
+actions   = ["s3:*"]
+resources = ["*"]
+```
+
+**Risk**: An IAM user with this policy can access ALL S3 buckets in the account, not just the intended bucket.
+
+**Solution**: Always scope S3 policies to specific bucket ARNs:
+```hcl
+actions = [
+  "s3:GetObject",
+  "s3:PutObject",
+  "s3:DeleteObject",
+  "s3:ListBucket"
+]
+resources = [
+  "arn:aws:s3:::${var.bucket_name}",
+  "arn:aws:s3:::${var.bucket_name}/*"
+]
+```
+
+**Note**: The Outline module (`modules/aws/apps/outline/main.tf`) already follows this pattern - it creates a properly-scoped inline policy rather than using the s3-user module.
+
 ### AWS CLI Region
 Always specify `--region eu-central-1` when using AWS CLI, or it may fail to find resources.
 

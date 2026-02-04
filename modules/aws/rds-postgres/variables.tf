@@ -76,9 +76,9 @@ variable "multi_az" {
 }
 
 variable "deletion_protection" {
-  description = "Enable deletion protection"
+  description = "Enable deletion protection. IMPORTANT: Must be set to false before terraform destroy. See docs/GOTCHAS.md for the two-step destroy workflow."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "skip_final_snapshot" {
