@@ -8,7 +8,7 @@
 
 ## 🚨 CRITICAL: AWS Credentials Exposed in Git History
 
-**Status:** 🔄 REMEDIATION IN PROGRESS
+**Status:** ✅ REMEDIATED (2026-02-04)
 
 ### Remediation Progress
 
@@ -16,11 +16,11 @@
 |------|--------|-------|
 | Remove tfplan from git tracking | ✅ Done | `git rm --cached` completed |
 | Update .gitignore | ✅ Done | Added tfplan patterns |
-| Scrub git history (BFG) | ⏳ Pending | Ready to run - BFG installed |
-| Force push to GitHub | ⏳ Pending | After BFG scrub |
-| Rotate SES credentials | ⏳ Pending | Terraform taint commands ready |
-| Detach quarantine policy | ⏳ Pending | After credential rotation |
-| Delete old access keys | ⏳ Pending | After quarantine detachment |
+| Scrub git history (BFG) | ✅ Done | tfplan removed from all commits |
+| Force push to GitHub | ✅ Done | Clean history pushed |
+| Rotate SES credentials | ✅ Done | New keys: `AKIA47CR2NO4QIYKWSDW`, `AKIA47CR2NO4QEG6QX7R` |
+| Detach quarantine policy | ✅ Done | Policies removed from both users |
+| Delete old access keys | ✅ Done | Terraform destroyed old keys |
 | Respond to AWS Support | ⏳ Pending | Cases 177013174400370, 177013175300914 |
 
 ### What Happened
@@ -33,10 +33,10 @@ AWS detected the exposure and:
 
 ### Compromised Credentials
 
-| IAM User | Access Key | Purpose | Status |
-|----------|------------|---------|--------|
-| `cochlearis-dev-zitadel-ses` | `AKIA47CR2NO4ZSUMKMFP` | Zitadel email (SES SMTP) | 🔒 Quarantined by AWS |
-| `cochlearis-dev-mattermost-ses` | `AKIA47CR2NO4UHWIVFWZ` | Mattermost email (SES SMTP) | 🔒 Quarantined by AWS |
+| IAM User | Old Access Key | New Access Key | Status |
+|----------|----------------|----------------|--------|
+| `cochlearis-dev-zitadel-ses` | `AKIA47CR2NO4ZSUMKMFP` (deleted) | `AKIA47CR2NO4QIYKWSDW` | ✅ Rotated |
+| `cochlearis-dev-mattermost-ses` | `AKIA47CR2NO4UHWIVFWZ` (deleted) | `AKIA47CR2NO4QEG6QX7R` | ✅ Rotated |
 
 ### Root Cause
 
@@ -441,13 +441,20 @@ environments/aws/dev/terraform.tfvars.example → Tracked (no secrets) ✅
 | Database deletion protection | ✅ Done | Defaults to true, docs updated |
 | .gitignore for tfplan | ✅ Done | Prevents future credential exposure |
 
-### 🔄 In Progress (Manual Steps Required)
+### ✅ Completed (Manual Steps)
+
+| Item | Status | Completed |
+|------|--------|-----------|
+| Scrub git history | ✅ Done | BFG removed tfplan, force pushed to GitHub |
+| Rotate SES credentials | ✅ Done | New access keys created via Terraform |
+| Detach quarantine policies | ✅ Done | AWS policies removed from IAM users |
+| Delete old access keys | ✅ Done | Terraform destroyed compromised keys |
+
+### ⏳ Pending
 
 | Item | Status | Next Action |
 |------|--------|-------------|
-| Scrub git history | ⏳ Ready | Run BFG to remove tfplan from history |
-| Rotate SES credentials | ⏳ Ready | Run terraform taint commands |
-| AWS Support response | ⏳ Pending | Reply to cases after credential rotation |
+| AWS Support response | ⏳ Pending | Reply to cases 177013174400370, 177013175300914 |
 
 ### 🚫 Deferred to TODO Bucket
 

@@ -614,7 +614,7 @@ module "bridge" {
   project         = var.project
   environment     = var.environment
   domain_name     = var.domain_name
-  route53_zone_id = module.vpc.route53_zone_id
+  route53_zone_id = var.route53_zone_id
 
   # Outline configuration
   outline_api_key_secret_arn = var.outline_api_key_secret_arn
